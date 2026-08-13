@@ -1,0 +1,4 @@
+interface:
+  display_name: "王朝网6.0-G录音评分"
+  short_description: "完成暗访录音取证、整数计分、报告生成与邮件交付流程"
+  default_prompt: "Use $byd-6-0-g-audio-scoring to score these mystery-shopper recordings and generate auditable PNG/XLSX reports."
