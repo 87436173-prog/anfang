@@ -1,4 +1,4 @@
 interface:
   display_name: "王朝网6.0-G录音评分"
-  short_description: "6.0-G评分、意向分级及严管价格话术审查"
+  short_description: "6.0-G本地评分与腾讯云线上转写双路径"
   default_prompt: "Use $byd-6-0-g-audio-scoring to score these mystery-shopper recordings and generate one auditable PNG report per reception."

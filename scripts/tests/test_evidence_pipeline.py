@@ -28,6 +28,31 @@ def row(t0: int, t1: int, text: str) -> dict:
 
 
 class EvidenceCandidateRegressionTests(unittest.TestCase):
+    def test_evidence_audit_embeds_transcription_route(self):
+        route = {
+            "schema_version": evidence.TRANSCRIPTION_AUDIT_SCHEMA,
+            "main_transcription": {
+                "provider": "tencent_rec_file",
+                "model": "16k_zh_en_2.0",
+                "language_mode": "mixed_zh",
+                "status": "success",
+            },
+        }
+        audit = evidence.build_audit(Path("initial.jsonl"), [], route)
+        self.assertEqual(audit["transcription_route"], route)
+
+    def test_local_evidence_audit_does_not_require_cloud_route(self):
+        audit = evidence.build_audit(Path("initial.jsonl"), [])
+        self.assertNotIn("transcription_route", audit)
+
+    def test_interior_color_confirmation_is_high_impact_candidate(self):
+        records = [row(12000, 12400, "报价确认一下，内饰颜色选棕色，可以，就棕色")]
+        candidates = evidence.build_candidates(records)
+        interior = [item for item in candidates if item["category"] == "interior_color"]
+        self.assertEqual(len(interior), 1)
+        signals = evidence.extract_signals(interior[0]["initial_transcript"])
+        self.assertTrue(signals["quote_components"]["interior_color"])
+
     def test_zhang_hengchao_wu_late_purchase_timing_is_detected(self):
         records = [
             row(0, 300, "先了解宋Ultra EV 605KM超越型"),
@@ -119,6 +144,24 @@ class DeterministicScoreValidationTests(unittest.TestCase):
             "review_signals": {"trial": []},
         }
 
+    @staticmethod
+    def cloud_route(main_status: str = "success", fallback: str = "none", review_status: str = "complete") -> dict:
+        return {
+            "schema_version": validator.TRANSCRIPTION_AUDIT_SCHEMA,
+            "main_transcription": {
+                "provider": "tencent_rec_file",
+                "model": "16k_zh_en_2.0",
+                "language_mode": "mixed_zh",
+                "status": main_status,
+                "fallback": fallback,
+            },
+            "high_impact_review": {
+                "provider": "cloud_whisper",
+                "model": "large-v3-turbo",
+                "status": review_status,
+            },
+        }
+
     def test_na_formula_and_floor_are_deterministic(self):
         result = validator.validate(self.job, self.audit)
         self.assertTrue(result["valid"], result["errors"])
@@ -133,12 +176,131 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("E2=3" in error for error in result["errors"]))
 
+    def test_e2_three_points_requires_confirmed_interior_color(self):
+        job, audit = self.valid_job_and_audit()
+        job["modules"][4] = ["E 报价成交", 5, 5]
+        job["base"] = 53
+        audit["derived"]["quote_completeness"] = {
+            "complete": True,
+            "components": {
+                "vehicle_or_price": True,
+                "payment_or_finance": True,
+                "fees": True,
+                "gifts": True,
+                "delivery": True,
+                "interior_color": True,
+            },
+        }
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("quote_confirmation" in error for error in result["errors"]))
+        self.assertTrue(any("interior_color audit candidate" in error for error in result["errors"]))
+
+    def test_confirmed_interior_color_allows_e2_three_points(self):
+        job, audit = self.valid_job_and_audit()
+        job["modules"][4] = ["E 报价成交", 5, 5]
+        job["base"] = 53
+        job["quote_confirmation"] = {
+            "status": "已确认",
+            "interior_color": "棕色",
+            "evidence": "12:05客户确认棕色内饰",
+        }
+        audit["derived"]["quote_completeness"] = {
+            "complete": True,
+            "components": {
+                "vehicle_or_price": True,
+                "payment_or_finance": True,
+                "fees": True,
+                "gifts": True,
+                "delivery": True,
+                "interior_color": True,
+            },
+        }
+        audit["candidates"].append(self.confirmed("interior_color", "E004"))
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_r1_history_remains_valid_without_interior_color(self):
+        job, audit = self.valid_job_and_audit()
+        job["rule_version"] = "6.0-G-HB-2026-08-27-r1"
+        audit["rule_version"] = "6.0-G-HB-2026-08-27-r1"
+        audit["coverage"].pop("interior_color", None)
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
     def test_unresolved_candidate_blocks_report(self):
         audit = copy.deepcopy(self.audit)
         audit["candidates"][0]["status"] = "needs_manual_review"
         result = validator.validate(self.job, audit)
         self.assertFalse(result["valid"])
         self.assertTrue(any("Unresolved high-impact evidence" in error for error in result["errors"]))
+
+    def test_local_job_without_transcription_route_remains_valid(self):
+        job, audit = self.valid_job_and_audit()
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_cloud_job_requires_transcription_route(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_codex"
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("Cloud result requires transcription_route" in error for error in result["errors"]))
+
+    def test_cloud_failure_with_local_fallback_blocks_final_score(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_codex"
+        audit["transcription_route"] = self.cloud_route(main_status="failed", fallback="local_whisper")
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("must succeed" in error for error in result["errors"]))
+        self.assertTrue(any("fallback cannot publish" in error for error in result["errors"]))
+
+    def test_cloud_codex_uses_tencent_mixed_engine_and_cloud_review(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_codex"
+        audit["transcription_route"] = self.cloud_route()
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_cloud_pipeline_rejects_local_accent_preclassification(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_codex"
+        audit["transcription_route"] = {**self.cloud_route(), "accent": {"effective": "wuhan"}}
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("must not use local accent pre-classification" in error for error in result["errors"]))
+
+    def test_cloud_codex_requires_completed_large_v3_turbo_review(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_codex"
+        audit["transcription_route"] = self.cloud_route(review_status="failed")
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("must be complete" in error for error in result["errors"]))
+
+    def test_cloud_shadow_never_publishes_notifies_or_counts_monthly(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_shadow"
+        job["delivery_controls"] = {"publish": False, "notify": False, "monthly_count": False}
+        audit["transcription_route"] = self.cloud_route()
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertEqual(
+            [error for error in result["errors"] if "cloud_shadow" in error],
+            ["cloud_shadow is candidate-only and cannot publish a final score"],
+        )
+
+    def test_cloud_shadow_rejects_enabled_delivery_controls(self):
+        job, audit = self.valid_job_and_audit()
+        job["result_mode"] = "cloud_shadow"
+        job["delivery_controls"] = {"publish": True, "notify": True, "monthly_count": True}
+        audit["transcription_route"] = self.cloud_route()
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("publish=false" in error for error in result["errors"]))
+        self.assertTrue(any("notify=false" in error for error in result["errors"]))
+        self.assertTrue(any("monthly_count=false" in error for error in result["errors"]))
 
     def test_test_drive_na_requires_two_confirmed_invitations(self):
         job, audit = self.valid_job_and_audit()
@@ -163,6 +325,24 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         ]
         result = validator.validate(job, audit)
         self.assertTrue(any("customer agreed" in error for error in result["errors"]))
+
+    def test_customer_scheduled_next_drive_allows_d2_d9_na(self):
+        job, audit = self.valid_job_and_audit()
+        job["rows"] = [["D", "D1", "试驾邀请", 5, 5, "10:20；16:47", "两次邀请"], ["D", "D2-D9", "试驾体验", 20, "NA", "16:53", "客户明确说明明天来试驾"]]
+        audit["candidates"].append(
+            {**self.confirmed("test_drive_response", "E004"), "review_signals": {"trial": ["agree", "scheduled"]}}
+        )
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_second_invite_then_customer_says_next_time_allows_d2_d9_na(self):
+        job, audit = self.valid_job_and_audit()
+        job["rows"] = [["D", "D1", "试驾邀请", 5, 5, "05:43；08:22", "两次邀请"], ["D", "D2-D9", "试驾体验", 20, "NA", "09:35", "客户说下次再试"]]
+        audit["candidates"].append(
+            {**self.confirmed("test_drive_response", "E004"), "review_signals": {"trial": ["deferred"]}}
+        )
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
 
     def test_actual_drive_score_requires_confirmed_actual_drive(self):
         job, audit = self.valid_job_and_audit()

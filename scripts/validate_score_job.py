@@ -8,10 +8,13 @@ import re
 from pathlib import Path
 
 
-RULE_VERSION = "6.0-G-HB-2026-08-27-r1"
+RULE_VERSION = "6.0-G-HB-2026-08-27-r2"
+TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
+LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1"}
+SUPPORTED_RULE_VERSIONS = {RULE_VERSION, *LEGACY_RULE_VERSIONS}
 CANONICAL_MAX = {"A": 10, "B": 25, "C": 20, "D": 25, "E": 5, "F": 5, "G": 10}
 REQUIRED_COVERAGE = {
-    "model_configuration", "price_policy", "test_drive_invite", "test_drive_response",
+    "model_configuration", "price_policy", "interior_color", "test_drive_invite", "test_drive_response",
     "test_drive_actual", "purchase_timing", "bonus_wet_tissue", "bonus_starbucks",
     "h_veto", "na_basis", "negative_incentive",
 }
@@ -114,13 +117,65 @@ def row_value(job: dict, key: str) -> object | None:
     return None
 
 
+def validate_transcription_route(job: dict, audit: dict, errors: list[str]) -> None:
+    result_mode = str(job.get("result_mode", "local_codex_test"))
+    if result_mode not in {"local_codex_test", "cloud_shadow", "cloud_codex"}:
+        errors.append("result_mode must be local_codex_test/cloud_shadow/cloud_codex")
+        return
+
+    if result_mode == "local_codex_test":
+        return
+
+    if result_mode == "cloud_shadow":
+        controls = job.get("delivery_controls", {})
+        if controls.get("publish") is not False:
+            errors.append("cloud_shadow requires delivery_controls.publish=false")
+        if controls.get("notify") is not False:
+            errors.append("cloud_shadow requires delivery_controls.notify=false")
+        if controls.get("monthly_count") is not False:
+            errors.append("cloud_shadow requires delivery_controls.monthly_count=false")
+        errors.append("cloud_shadow is candidate-only and cannot publish a final score")
+
+    route = audit.get("transcription_route")
+    if route is None:
+        errors.append("Cloud result requires transcription_route audit")
+        return
+    if route.get("schema_version") != TRANSCRIPTION_AUDIT_SCHEMA:
+        errors.append("Unsupported transcription_route.schema_version")
+    if any(key in route for key in ("accent", "requested_accent", "effective_accent")):
+        errors.append("Cloud pipeline must not use local accent pre-classification")
+
+    main = route.get("main_transcription", {})
+    if main.get("provider") != "tencent_rec_file":
+        errors.append("Cloud main transcription provider must be tencent_rec_file")
+    if main.get("model") != "16k_zh_en_2.0":
+        errors.append("Cloud main transcription model must be 16k_zh_en_2.0")
+    if main.get("language_mode") != "mixed_zh":
+        errors.append("Cloud main transcription language_mode must be mixed_zh")
+    if main.get("status") != "success":
+        errors.append("Cloud main transcription must succeed before publication")
+    if main.get("fallback") not in {None, "none"}:
+        errors.append("Cloud main transcription fallback cannot publish a final score")
+
+    review = route.get("high_impact_review", {})
+    if review.get("provider") != "cloud_whisper":
+        errors.append("Cloud high-impact review provider must be cloud_whisper")
+    if review.get("model") != "large-v3-turbo":
+        errors.append("Cloud high-impact review model must be large-v3-turbo")
+    if review.get("status") != "complete":
+        errors.append("Cloud high-impact review must be complete before publication")
+
+
 def validate(job: dict, audit: dict) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
-    if job.get("rule_version") != RULE_VERSION:
-        errors.append(f"job.rule_version must be {RULE_VERSION}")
-    if audit.get("rule_version") != RULE_VERSION:
-        errors.append(f"audit.rule_version must be {RULE_VERSION}")
+    validate_transcription_route(job, audit, errors)
+    job_version = job.get("rule_version")
+    audit_version = audit.get("rule_version")
+    if job_version not in SUPPORTED_RULE_VERSIONS:
+        errors.append(f"unsupported job.rule_version: {job_version}; active version is {RULE_VERSION}")
+    if audit_version != job_version:
+        errors.append("audit.rule_version must match job.rule_version")
 
     modules = job.get("modules", [])
     seen: dict[str, tuple[int, int]] = {}
@@ -158,7 +213,8 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("job.negative_incentive conflicts with deterministic calculation")
 
     coverage = audit.get("coverage", {})
-    missing = REQUIRED_COVERAGE - set(coverage)
+    required_coverage = REQUIRED_COVERAGE if job_version == RULE_VERSION else REQUIRED_COVERAGE - {"interior_color"}
+    missing = required_coverage - set(coverage)
     if missing:
         errors.append(f"Missing audit coverage: {sorted(missing)}")
     unresolved = [item.get("id", "unknown") for item in audit.get("candidates", []) if item.get("status") != "confirmed"]
@@ -182,7 +238,12 @@ def validate(job: dict, audit: dict) -> dict:
     if na > 0:
         na_candidates = confirmed_candidates(audit, "na_basis")
         drive_invites = confirmed_candidates(audit, "test_drive_invite")
-        if not na_candidates and len(drive_invites) < 2:
+        drive_responses_for_na = confirmed_candidates(audit, "test_drive_response")
+        scheduled_next_drive = any(
+            "scheduled" in item.get("review_signals", {}).get("trial", [])
+            for item in drive_responses_for_na
+        )
+        if not na_candidates and len(drive_invites) < 2 and not scheduled_next_drive:
             errors.append("NA requires confirmed refusal/NA evidence or two confirmed test-drive invitations")
     if bonus > 0:
         bonus_candidates = confirmed_candidates(audit, "bonus_wet_tissue") + confirmed_candidates(audit, "bonus_starbucks")
@@ -206,9 +267,11 @@ def validate(job: dict, audit: dict) -> dict:
     if d2_d9_value in {15, 20} and not drive_actual:
         errors.append("D2-D9 test-drive score requires confirmed actual test drive evidence")
     if d2_d9_value == "NA":
-        if len(drive_invites) < 2:
-            errors.append("D2-D9=NA requires two confirmed effective invitations")
-        if "agree" in response_signals and not drive_actual:
+        scheduled_next_drive = "scheduled" in response_signals
+        deferred_next_drive = "deferred" in response_signals
+        if len(drive_invites) < 2 and not scheduled_next_drive:
+            errors.append("D2-D9=NA requires two confirmed effective invitations or a confirmed next-drive schedule")
+        if "agree" in response_signals and not drive_actual and not scheduled_next_drive and not deferred_next_drive:
             errors.append("D2-D9 cannot be NA when customer agreed but sales did not arrange the drive")
 
     if "E" in seen:
@@ -216,7 +279,16 @@ def validate(job: dict, audit: dict) -> dict:
         e2_awarded = (e_max == 5 and e_score in {3, 5}) or (e_max == 3 and e_score == 3)
         quote = audit.get("derived", {}).get("quote_completeness", {})
         if e2_awarded and not quote.get("complete"):
-            errors.append("E2=3 requires confirmed vehicle/price, payment/finance, fees, gifts and delivery evidence")
+            errors.append("E2=3 requires confirmed vehicle/price, payment/finance, fees, gifts, delivery and interior-color evidence")
+        if job_version == RULE_VERSION and e2_awarded:
+            confirmation = job.get("quote_confirmation", {})
+            interior_color = str(confirmation.get("interior_color", "")).strip()
+            if confirmation.get("status") != "已确认" or not interior_color or interior_color in {"未确认", "待核实"}:
+                errors.append("E2=3 requires quote_confirmation.status=已确认 and a confirmed interior_color")
+            if not has_timestamp(confirmation.get("evidence")):
+                errors.append("E2=3 requires timestamped interior-color confirmation evidence")
+            if not confirmed_candidates(audit, "interior_color"):
+                errors.append("E2=3 requires a confirmed interior_color audit candidate")
         if not quote:
             warnings.append("quote completeness derivation is absent")
 
@@ -226,7 +298,8 @@ def validate(job: dict, audit: dict) -> dict:
 
     validate_rows(job, errors)
     return {
-        "rule_version": RULE_VERSION,
+        "rule_version": job_version,
+        "active_rule_version": RULE_VERSION,
         "valid": not errors,
         "calculated_score": calculated,
         "negative_incentive": expected_negative,

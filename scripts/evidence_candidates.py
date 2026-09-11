@@ -12,13 +12,15 @@ from pathlib import Path
 from typing import Iterable
 
 
-RULE_VERSION = "6.0-G-HB-2026-08-27-r1"
+RULE_VERSION = "6.0-G-HB-2026-08-27-r2"
+TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 HIGH_PRECISION_MODEL = r"C:\Users\no02\.cache\whisper\ggml-large-v3-turbo-q5_0.bin"
 FALLBACK_MODEL = r"C:\Users\no02\.cache\whisper\ggml-small.bin"
 
 REQUIRED_CATEGORIES = (
     "model_configuration",
     "price_policy",
+    "interior_color",
     "test_drive_invite",
     "test_drive_response",
     "test_drive_actual",
@@ -37,7 +39,11 @@ PATTERNS = {
     ),
     "price_policy": (
         r"\d+(?:\.\d+)?\s*(?:万|元|块|个点)", r"价格|报价|落地|裸车|成交价", r"优惠|补贴|返息|返现|免息",
-        r"保险|购置税|上牌|服务费", r"赠送|礼品|精品|保养|充电桩", r"交车|提车周期|到车",
+        r"保险|购置税|上牌|服务费", r"赠送|礼品|精品|保养|充电桩", r"交车|提车周期|到车", r"内饰颜色|座椅颜色|内饰配色",
+    ),
+    "interior_color": (
+        r"(?:内饰|座椅|舱内).{0,8}(?:颜色|配色|色系)",
+        r"(?:颜色|配色|色系).{0,8}(?:内饰|座椅|舱内)",
     ),
     "test_drive_invite": (
         r"要不要.{0,8}(?:试驾|试乘|开一下|体验一下)", r"可以.{0,8}(?:试驾|试乘|试一下)",
@@ -46,6 +52,8 @@ PATTERNS = {
     "test_drive_response": (
         r"不用.{0,5}(?:试驾|试乘|试)", r"不想.{0,5}(?:试驾|试乘|试)", r"不试", r"拒绝.{0,5}试驾",
         r"可以.{0,5}(?:试驾|试乘|开)", r"愿意.{0,5}(?:试驾|试乘|开)", r"要开一下|去试|安排吧",
+        r"(?:明天|后天|周末|下周|星期[一二三四五六日天]|周[一二三四五六日天]|上午|下午|晚上).{0,20}(?:试驾|试乘|试一下|开一下|提前试)",
+        r"(?:下次|改天|回头).{0,8}(?:试驾|试乘|试一下|再试|再开)",
     ),
     "test_drive_actual": (
         r"试驾协议|试驾登记|驾驶证|驾照", r"试驾路线|路线怎么走", r"出发|开出去|上路",
@@ -171,6 +179,8 @@ def extract_signals(text: str) -> dict:
     trial = sorted(name for name, pattern in {
         "invite": r"试驾|试乘|有试驾车|开一下|体验一下",
         "agree": r"可以试|愿意试|要开一下|去试|安排吧",
+        "scheduled": r"(?:明天|后天|周末|下周|星期[一二三四五六日天]|周[一二三四五六日天]|上午|下午|晚上).{0,20}(?:试驾|试乘|试一下|开一下|提前试)",
+        "deferred": r"(?:下次|改天|回头).{0,8}(?:试驾|试乘|试一下|再试|再开)",
         "refuse": r"不用试|不试驾|不想试|拒绝试驾",
         "actual": r"试驾协议|试驾登记|驾驶证|试驾路线|开出去|试驾结束|刚才试驾",
     }.items() if re.search(pattern, value))
@@ -181,6 +191,7 @@ def extract_signals(text: str) -> dict:
         "fees": bool(re.search(r"保险|购置税|上牌|服务费", value)),
         "gifts": bool(re.search(r"赠送|礼品|精品|脚垫|车膜|后备箱垫|保养|充电桩", value)),
         "delivery": bool(re.search(r"交车|提车|到车|周期|现车", value)),
+        "interior_color": bool(re.search(r"(?:内饰|座椅|舱内).{0,8}(?:颜色|配色|色系)|(?:颜色|配色|色系).{0,8}(?:内饰|座椅|舱内)", value)),
     }
     return {
         "models": models,
@@ -199,8 +210,9 @@ def category_confirmed(category: str, signals: dict) -> bool:
     checks = {
         "model_configuration": bool(signals["models"] or re.search(r"配置|版本|公里|km", signals.get("raw", ""), re.I)),
         "price_policy": bool(signals["amounts"] or any(signals["quote_components"].values())),
+        "interior_color": signals["quote_components"]["interior_color"],
         "test_drive_invite": "invite" in signals["trial"],
-        "test_drive_response": bool({"agree", "refuse"} & set(signals["trial"])),
+        "test_drive_response": bool({"agree", "scheduled", "deferred", "refuse"} & set(signals["trial"])),
         "test_drive_actual": "actual" in signals["trial"],
         "purchase_timing": bool(signals["timing"]),
         "bonus_wet_tissue": signals["wet_tissue"],
@@ -252,16 +264,23 @@ def run_review(transcriber: Path, wav: Path, output: Path) -> subprocess.Complet
 
 
 def derive_quote_completeness(candidates: list[dict]) -> dict:
-    combined = {key: False for key in ("vehicle_or_price", "payment_or_finance", "fees", "gifts", "delivery")}
+    combined = {key: False for key in ("vehicle_or_price", "payment_or_finance", "fees", "gifts", "delivery", "interior_color")}
     for item in candidates:
-        if item["category"] != "price_policy" or item["status"] != "confirmed":
+        if item["category"] not in {"price_policy", "interior_color"} or item["status"] != "confirmed":
             continue
         for key, value in item.get("review_signals", {}).get("quote_components", {}).items():
             combined[key] = combined[key] or bool(value)
     return {"components": combined, "complete": all(combined.values())}
 
 
-def build_audit(transcript: Path, candidates: list[dict]) -> dict:
+def load_transcription_audit(path: Path) -> dict:
+    audit = json.loads(path.read_text(encoding="utf-8"))
+    if audit.get("schema_version") != TRANSCRIPTION_AUDIT_SCHEMA:
+        raise ValueError("Unsupported or missing transcription audit schema")
+    return audit
+
+
+def build_audit(transcript: Path, candidates: list[dict], transcription_audit: dict | None = None) -> dict:
     counts = {category: sum(item["category"] == category for item in candidates) for category in REQUIRED_CATEGORIES}
     coverage = {}
     for category, count in counts.items():
@@ -271,7 +290,7 @@ def build_audit(transcript: Path, candidates: list[dict]) -> dict:
             "status": "scanned_no_candidates" if count == 0 else ("reviewed" if states == {"confirmed"} else "attention_required"),
         }
     coverage["negative_incentive"] = {"candidate_count": 0, "status": "derived_by_score_validator"}
-    return {
+    audit = {
         "rule_version": RULE_VERSION,
         "source_transcript": str(transcript),
         "review_model": HIGH_PRECISION_MODEL,
@@ -279,18 +298,23 @@ def build_audit(transcript: Path, candidates: list[dict]) -> dict:
         "derived": {"quote_completeness": derive_quote_completeness(candidates)},
         "candidates": candidates,
     }
+    if transcription_audit is not None:
+        audit["transcription_route"] = transcription_audit
+    return audit
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract and high-precision review high-impact scoring evidence")
     parser.add_argument("--transcript", required=True, type=Path)
     parser.add_argument("--audio", required=True, type=Path)
+    parser.add_argument("--transcription-audit", type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--transcriber", required=True, type=Path)
     parser.add_argument("--context-seconds", type=int, default=12)
     args = parser.parse_args()
 
     records = load_jsonl(args.transcript)
+    transcription_audit = load_transcription_audit(args.transcription_audit) if args.transcription_audit else None
     candidates = build_candidates(records, context_ticks=max(3, args.context_seconds) * 100)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     clips = args.out_dir / "clips"
@@ -318,7 +342,7 @@ def main() -> None:
         item["rationale"] = rationale
         item["adopted_conclusion"] = review_text if status == "confirmed" else ""
 
-    audit = build_audit(args.transcript, candidates)
+    audit = build_audit(args.transcript, candidates, transcription_audit)
     output = args.out_dir / "evidence-audit.json"
     output.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
     unresolved = sum(item["status"] != "confirmed" for item in candidates)

@@ -4,7 +4,7 @@
 
 ```json
 {
-  "rule_version": "6.0-G-HB-2026-08-27-r1",
+  "rule_version": "6.0-G-HB-2026-08-27-r2",
   "slug": "20260813_sales_customer_car",
   "sales": "销售姓名",
   "customer": "客户称谓",
@@ -39,6 +39,11 @@
       "suggestion": "统一表述为按备案价执行，具体权益到店按已备案政策核对"
     }
   ],
+  "quote_confirmation": {
+    "status": "已确认",
+    "interior_color": "棕色",
+    "evidence": "16:28客户确认选择棕色内饰"
+  },
   "base": 78,
   "na": 20,
   "bonus": 0,
@@ -55,7 +60,48 @@
 }
 ```
 
-后续新录音和明确复核任务必须增加`rule_version`，并生成独立的`evidence-audit.json`。审计文件保存每个高影响候选的初次转写、二次复核、采用结论、时间戳、判定依据和冲突状态；不写入PNG，也不作为默认交付物。评分前必须运行`validate_score_job.py`，存在`pending`、`needs_manual_review`或`unresolved`候选时不得生成最终报告。
+后续新录音和明确复核任务必须增加`rule_version`。本地现行job可省略`result_mode`，按`local_codex_test`兼容处理，不强制补写云审计。云端job必须显式填写`result_mode`为`cloud_shadow`或`cloud_codex`，并生成独立的`transcription-audit.json`，再嵌入`evidence-audit.json.transcription_route`。审计文件不写入PNG，也不作为默认交付物。
+
+云端`evidence-audit.json`必须包含：
+
+```json
+{
+  "transcription_route": {
+    "schema_version": "byd-transcription-pipeline-v2",
+    "main_transcription": {
+      "provider": "tencent_rec_file",
+      "model": "16k_zh_en_2.0",
+      "language_mode": "mixed_zh",
+      "status": "success",
+      "fallback": "none"
+    },
+    "high_impact_review": {
+      "provider": "cloud_whisper",
+      "model": "large-v3-turbo",
+      "status": "complete"
+    }
+  }
+}
+```
+
+云端不记录或依赖本地方言预分类；普通话、武汉话和混合口音均使用同一`mixed_zh`引擎。任何云主转写失败、本地主转写fallback或云端高影响复核不完整都禁止最终报告。
+
+`cloud_shadow`的`job.json`还必须包含：
+
+```json
+{
+  "result_mode": "cloud_shadow",
+  "delivery_controls": {
+    "publish": false,
+    "notify": false,
+    "monthly_count": false
+  }
+}
+```
+
+`cloud_shadow`只能保存candidate用于对照，不能通过最终报告校验。`cloud_codex`仍须通过所有现有规则和证据门禁。不同环境对照时使用不同job/run，并仅以脱敏`comparison_id`关联；不得覆盖历史run、旧报告或源录音。
+
+r2新任务中，E2得3分还必须填写`quote_confirmation`：`status`固定为“已确认”，`interior_color`填写客户明确选择或倾向的内饰颜色，`evidence`填写时间戳。仅确认外观颜色、只列举可选内饰色或无法确认客户选择时，E2记0分；报价被客户明确拒绝时仍按规则记NA，不要求填写本字段。r1历史任务不追溯补填。
 
 脚本根据base、NA、bonus自动计算整数总分和负激励，不接受手工填写总分覆盖公式。`modules`每项格式是`[名称, 适用满分, 实得]`；存在NA时，相应分值从模块满分扣除，因此模块适用满分合计必须等于`100-NA`。`rows`格式是`[模块, 小项, 名称, 满分, 得分或NA, 时间戳, 证据]`，作为内部审计数据保留，不另生成表格。
 
