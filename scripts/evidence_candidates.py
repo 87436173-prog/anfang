@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Iterable
 
 
-RULE_VERSION = "6.0-G-HB-2026-08-27-r2"
+RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
+PRICE_POLICY_VERSION = "HB-2026-09-14"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 HIGH_PRECISION_MODEL = r"C:\Users\no02\.cache\whisper\ggml-large-v3-turbo-q5_0.bin"
 FALLBACK_MODEL = r"C:\Users\no02\.cache\whisper\ggml-small.bin"
@@ -292,6 +293,7 @@ def build_audit(transcript: Path, candidates: list[dict], transcription_audit: d
     coverage["negative_incentive"] = {"candidate_count": 0, "status": "derived_by_score_validator"}
     audit = {
         "rule_version": RULE_VERSION,
+        "price_policy_version": PRICE_POLICY_VERSION,
         "source_transcript": str(transcript),
         "review_model": HIGH_PRECISION_MODEL,
         "coverage": coverage,

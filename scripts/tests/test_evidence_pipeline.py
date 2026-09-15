@@ -107,6 +107,7 @@ class DeterministicScoreValidationTests(unittest.TestCase):
     def setUp(self):
         self.job = {
             "rule_version": validator.RULE_VERSION,
+            "price_policy_version": validator.PRICE_POLICY_VERSION,
             "models_of_interest": {"evidence": "00:30确认宋Pro飞驰版"},
             "intention": {"level": "C", "evidence": "16:20表示继续考虑"},
             "strict_control": {"status": "是", "series": "宋Pro DM-i飞驰版", "filed_price": "99900元"},
@@ -122,6 +123,7 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         coverage = {category: {"status": "scanned_no_candidates", "candidate_count": 0} for category in validator.REQUIRED_COVERAGE}
         self.audit = {
             "rule_version": validator.RULE_VERSION,
+            "price_policy_version": validator.PRICE_POLICY_VERSION,
             "coverage": coverage,
             "derived": {"quote_completeness": {"complete": False, "components": {}}},
             "candidates": [
@@ -167,6 +169,29 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         self.assertTrue(result["valid"], result["errors"])
         self.assertEqual(result["calculated_score"], 62)
         self.assertEqual(result["negative_incentive"], "2万元折让/家")
+
+    def test_latest_policy_required_for_new_jobs_and_audits(self):
+        for target in ("job", "audit"):
+            job, audit = self.valid_job_and_audit()
+            (job if target == "job" else audit)["price_policy_version"] = "HB-2026-08-14"
+            result = validator.validate(job, audit)
+            self.assertFalse(result["valid"])
+            self.assertTrue(any("price_policy_version" in e for e in result["errors"]))
+
+    def test_d1_na_cascades_without_temporary_text(self):
+        job, audit = self.valid_job_and_audit()
+        job.update(base=45, na=25)
+        job["modules"][3] = ["D试驾", 0, 0]
+        job["rows"] = [["D", "D1", "邀约", 5, "NA", "01:00", "客户主动要求"],
+                       ["D", "D2-D9", "体验", 20, "NA", "01:00", "D1 NA联动"]]
+        audit["candidates"].append(self.confirmed("na_basis", "NA001"))
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertEqual(result["calculated_score"], 60)
+        job["rows"][1][4] = 0
+        result = validator.validate(job, audit)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("requires D2-D9=NA" in e for e in result["errors"]))
 
     def test_incomplete_quote_blocks_e2_three_points(self):
         job = copy.deepcopy(self.job)

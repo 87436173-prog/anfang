@@ -4,14 +4,15 @@
 
 ```json
 {
-  "rule_version": "6.0-G-HB-2026-08-27-r2",
+  "rule_version": "6.0-G-HB-2026-09-14-r3",
+  "price_policy_version": "HB-2026-09-14",
   "slug": "20260813_sales_customer_car",
   "sales": "销售姓名",
   "customer": "客户称谓",
   "car": "车型",
   "duration": "约30分",
   "audio": "录音文件名（可选）",
-  "report_date": "2026-08-14（可选）",
+  "report_date": "2026-09-14（可选）",
   "models_of_interest": {
     "primary": "元UP 401KM领先型",
     "own_brand": ["元UP 401KM领先型", "第三代元PLUS"],
@@ -28,7 +29,7 @@
     "series": "元UP",
     "trim": "401KM领先型",
     "filed_price": "94800元",
-    "policy_basis": "2026-08-14湖北省活动备案表；元UP严管补充口径"
+    "policy_basis": "2026-09-14湖北省活动备案表；元UP严管补充口径"
   },
   "compliance": [
     {
@@ -101,7 +102,7 @@
 
 `cloud_shadow`只能保存candidate用于对照，不能通过最终报告校验。`cloud_codex`仍须通过所有现有规则和证据门禁。不同环境对照时使用不同job/run，并仅以脱敏`comparison_id`关联；不得覆盖历史run、旧报告或源录音。
 
-r2新任务中，E2得3分还必须填写`quote_confirmation`：`status`固定为“已确认”，`interior_color`填写客户明确选择或倾向的内饰颜色，`evidence`填写时间戳。仅确认外观颜色、只列举可选内饰色或无法确认客户选择时，E2记0分；报价被客户明确拒绝时仍按规则记NA，不要求填写本字段。r1历史任务不追溯补填。
+r2及r3任务中，E2得3分还必须填写`quote_confirmation`：`status`固定为“已确认”，`interior_color`填写客户明确选择或倾向的内饰颜色，`evidence`填写时间戳。仅确认外观颜色、只列举可选内饰色或无法确认客户选择时，E2记0分；报价被客户明确拒绝时仍按规则记NA，不要求填写本字段。r1历史任务不追溯补填。
 
 脚本根据base、NA、bonus自动计算整数总分和负激励，不接受手工填写总分覆盖公式。`modules`每项格式是`[名称, 适用满分, 实得]`；存在NA时，相应分值从模块满分扣除，因此模块适用满分合计必须等于`100-NA`。`rows`格式是`[模块, 小项, 名称, 满分, 得分或NA, 时间戳, 证据]`，作为内部审计数据保留，不另生成表格。
 
@@ -116,3 +117,5 @@ r2新任务中，E2得3分还必须填写`quote_confirmation`：`status`固定�
 只生成PNG，不生成XLSX、CSV或其他表格文件。PNG固定采用统一信息卡样式并按以下顺序输出：关注车型与意向概览、严管状态、合规话术审查、模块得分、静态讲解专项、主要扣分点、服务亮点、核心改进建议、默认项说明。`improvements`和`defaults`允许省略；省略时脚本仍能生成完整报告。
 
 新证据流程只用于后续新录音；历史评分仅在用户明确要求复核时创建新版本，不自动覆盖或重发旧PNG。
+
+r3新任务的job与evidence-audit.json均须包含`price_policy_version: "HB-2026-09-14"`；实际价格和权益逐项匹配完整9月快照。旧r1/r2只用于历史兼容，不为其补造当期政策版本。D1为NA时，D2-D9同为NA，D模块填`["D试驾", 0, 0]`，试驾贡献NA25且基础分不增加；审计保留D1的独立NA依据。

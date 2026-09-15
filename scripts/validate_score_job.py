@@ -8,9 +8,10 @@ import re
 from pathlib import Path
 
 
-RULE_VERSION = "6.0-G-HB-2026-08-27-r2"
+RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
+PRICE_POLICY_VERSION = "HB-2026-09-14"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
-LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1"}
+LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1", "6.0-G-HB-2026-08-27-r2"}
 SUPPORTED_RULE_VERSIONS = {RULE_VERSION, *LEGACY_RULE_VERSIONS}
 CANONICAL_MAX = {"A": 10, "B": 25, "C": 20, "D": 25, "E": 5, "F": 5, "G": 10}
 REQUIRED_COVERAGE = {
@@ -49,6 +50,7 @@ def allowed_module_score(letter: str, applicable_max: int, score: int) -> bool:
         return 0 <= score <= applicable_max and score in C_SCORES
     if letter == "D":
         return (applicable_max, score) in {
+            (0, 0),
             (25, 0), (25, 5), (25, 15), (25, 20), (25, 25),
             (20, 15), (20, 20), (5, 5),
         }
@@ -177,6 +179,12 @@ def validate(job: dict, audit: dict) -> dict:
     if audit_version != job_version:
         errors.append("audit.rule_version must match job.rule_version")
 
+    if job_version == RULE_VERSION:
+        if job.get("price_policy_version") != PRICE_POLICY_VERSION:
+            errors.append("Current job requires price_policy_version=" + PRICE_POLICY_VERSION)
+        if audit.get("price_policy_version") != PRICE_POLICY_VERSION:
+            errors.append("Current audit requires price_policy_version=" + PRICE_POLICY_VERSION)
+
     modules = job.get("modules", [])
     seen: dict[str, tuple[int, int]] = {}
     for row in modules:
@@ -213,7 +221,7 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("job.negative_incentive conflicts with deterministic calculation")
 
     coverage = audit.get("coverage", {})
-    required_coverage = REQUIRED_COVERAGE if job_version == RULE_VERSION else REQUIRED_COVERAGE - {"interior_color"}
+    required_coverage = REQUIRED_COVERAGE if job_version != "6.0-G-HB-2026-08-27-r1" else REQUIRED_COVERAGE - {"interior_color"}
     missing = required_coverage - set(coverage)
     if missing:
         errors.append(f"Missing audit coverage: {sorted(missing)}")
@@ -260,6 +268,14 @@ def validate(job: dict, audit: dict) -> dict:
     }
     d1_value = row_value(job, "D1")
     d2_d9_value = row_value(job, "D2-D9")
+    # User rule updated 2026-09-15: D1 NA always makes the full drive module NA.
+    d1_na_cascade = d1_value == "NA"
+    if d1_na_cascade and d2_d9_value != "NA":
+        errors.append("User policy requires D2-D9=NA when D1=NA")
+    if d1_na_cascade and not confirmed_candidates(audit, "na_basis"):
+        errors.append("D1=NA requires confirmed NA-basis evidence")
+    if d1_na_cascade and (seen.get("D") != (0, 0) or na < 25):
+        errors.append("D1=NA requires full D module NA25 with applicable max/score 0/0")
     if d1_value == 5 and not drive_actual and len(drive_invites) < 2:
         errors.append("D1=5 without actual test drive requires two confirmed effective invitations")
     if d1_value == 5 and drive_actual and not drive_invites:
@@ -269,9 +285,9 @@ def validate(job: dict, audit: dict) -> dict:
     if d2_d9_value == "NA":
         scheduled_next_drive = "scheduled" in response_signals
         deferred_next_drive = "deferred" in response_signals
-        if len(drive_invites) < 2 and not scheduled_next_drive:
+        if not d1_na_cascade and len(drive_invites) < 2 and not scheduled_next_drive:
             errors.append("D2-D9=NA requires two confirmed effective invitations or a confirmed next-drive schedule")
-        if "agree" in response_signals and not drive_actual and not scheduled_next_drive and not deferred_next_drive:
+        if not d1_na_cascade and "agree" in response_signals and not drive_actual and not scheduled_next_drive and not deferred_next_drive:
             errors.append("D2-D9 cannot be NA when customer agreed but sales did not arrange the drive")
 
     if "E" in seen:
@@ -280,7 +296,7 @@ def validate(job: dict, audit: dict) -> dict:
         quote = audit.get("derived", {}).get("quote_completeness", {})
         if e2_awarded and not quote.get("complete"):
             errors.append("E2=3 requires confirmed vehicle/price, payment/finance, fees, gifts, delivery and interior-color evidence")
-        if job_version == RULE_VERSION and e2_awarded:
+        if job_version != "6.0-G-HB-2026-08-27-r1" and e2_awarded:
             confirmation = job.get("quote_confirmation", {})
             interior_color = str(confirmation.get("interior_color", "")).strip()
             if confirmation.get("status") != "已确认" or not interior_color or interior_color in {"未确认", "待核实"}:
