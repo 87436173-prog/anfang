@@ -28,6 +28,51 @@ def row(t0: int, t1: int, text: str) -> dict:
 
 
 class EvidenceCandidateRegressionTests(unittest.TestCase):
+    def test_trial_fuzzy_phrases_create_high_recall_candidates(self):
+        records = [
+            row(31900, 32300, "要不要车架一下，您也可以亲自开一圈感受"),
+            row(48900, 49300, "我再问一下，等会您来开一下吧"),
+        ]
+        candidates = evidence.build_candidates(records)
+        invites = [item for item in candidates if item["category"] == "test_drive_invite"]
+        self.assertGreaterEqual(len(invites), 2)
+
+    def test_trial_sweep_covers_first_15_minutes_and_last_quarter(self):
+        records = [row(0, 100, "开始接待"), row(239900, 240000, "接待结束")]
+        candidates = evidence.build_candidates(records)
+        sweep = [item for item in candidates if item["category"] == "test_drive_sweep"]
+        self.assertTrue(any(item["start_ticks"] == 0 for item in sweep))
+        self.assertTrue(any(item["end_ticks"] >= 240000 for item in sweep))
+
+    def test_zhou_multiple_invitations_regression(self):
+        records = [
+            row(31900, 32300, "要不要车架一下，亲自开一下感受"),
+            row(48900, 49300, "我再邀您体验一下，您来开一圈"),
+            row(72000, 72400, "价格前再问一下要不要试价"),
+            row(119000, 119500, "前面已经开过了，这次不用试了"),
+            row(120000, 120100, "结束"),
+        ]
+        candidates = evidence.build_candidates(records)
+        invites = [item for item in candidates if item["category"] == "test_drive_invite"]
+        self.assertGreaterEqual(len(invites), 2, "周先生样本必须保留多次独立邀约")
+
+    def test_sheng_actual_drive_chain_and_repeat_request_regression(self):
+        records = [
+            row(43500, 43900, "先登记驾驶证和手机号，签一下协议"),
+            row(77100, 77500, "现在加速，轻踩刹车，方向盘会比较轻"),
+            row(234200, 234700, "元PLUS还有试驾车吗，我想再开一次"),
+            row(240000, 240100, "结束"),
+        ]
+        candidates = evidence.build_candidates(records)
+        self.assertTrue(any(item.get("sweep_reason") == "repeat_backtrack_5_to_40_minutes" for item in candidates))
+        for item in candidates:
+            item["status"] = "confirmed"
+            item["review_signals"] = evidence.extract_signals(item["initial_transcript"])
+        timeline = evidence.derive_trial_timeline(candidates)
+        event_types = {item["event_type"] for item in timeline["events"]}
+        self.assertTrue({"paperwork", "dynamic", "repeat"} <= event_types)
+        self.assertTrue(timeline["actual_drive_chain"])
+
     def test_evidence_audit_embeds_transcription_route(self):
         route = {
             "schema_version": evidence.TRANSCRIPTION_AUDIT_SCHEMA,
@@ -131,6 +176,12 @@ class DeterministicScoreValidationTests(unittest.TestCase):
                 {"id": "E002", "category": "test_drive_invite", "status": "confirmed", "timestamp": "04:29-04:31"},
                 {"id": "E003", "category": "test_drive_invite", "status": "confirmed", "timestamp": "10:52-10:55"},
             ],
+            "trial_review": {
+                "full_recording_trial_sweep": True,
+                "all_windows_reviewed": True,
+                "windows": [{"start": "00:00", "end": "15:00", "status": "confirmed"}],
+                "timeline": {"events": [], "actual_drive_chain": False},
+            },
         }
 
     def valid_job_and_audit(self):
@@ -336,6 +387,34 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         audit["candidates"] = [self.confirmed("test_drive_invite", "E001")]
         result = validator.validate(job, audit)
         self.assertTrue(any("two confirmed effective invitations" in error for error in result["errors"]))
+
+    def test_duplicate_invitation_window_does_not_count_twice(self):
+        job, audit = self.valid_job_and_audit()
+        job["na"] = 20
+        job["modules"][3] = ["D试驾", 5, 5]
+        job["base"] = sum(row[2] for row in job["modules"])
+        job["rows"] = [["D", "D1", "试驾邀请", 5, 5, "03:20", "两条重复候选"], ["D", "D2-D9", "试驾体验", 20, "NA", "03:20", "未接受"]]
+        audit["candidates"] = [
+            self.confirmed("test_drive_invite", "E001"),
+            self.confirmed("test_drive_invite", "E002"),
+        ]
+        result = validator.validate(job, audit)
+        self.assertTrue(any("distinct" in error for error in result["errors"]))
+
+    def test_current_rule_rejects_missing_full_trial_sweep(self):
+        job, audit = self.valid_job_and_audit()
+        audit.pop("trial_review")
+        result = validator.validate(job, audit)
+        self.assertTrue(any("full-recording trial sweep" in error for error in result["errors"]))
+
+    def test_d1_zero_is_blocked_when_actual_drive_chain_exists(self):
+        job, audit = self.valid_job_and_audit()
+        job["modules"][3] = ["D试驾", 25, 15]
+        job["base"] = sum(row[2] for row in job["modules"])
+        job["rows"] = [["D", "D1", "试驾邀请", 5, 0, "07:15", "漏记邀约"], ["D", "D2-D9", "试驾体验", 20, 15, "12:51", "已实际试驾"]]
+        audit["candidates"].append(self.confirmed("test_drive_actual", "E010"))
+        result = validator.validate(job, audit)
+        self.assertTrue(any("D1=0 conflicts" in error for error in result["errors"]))
 
     def test_customer_agreed_but_unarranged_drive_cannot_be_na(self):
         job, audit = self.valid_job_and_audit()

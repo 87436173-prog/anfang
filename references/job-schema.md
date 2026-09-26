@@ -63,6 +63,44 @@
 
 后续新录音和明确复核任务必须增加`rule_version`。本地现行job可省略`result_mode`，按`local_codex_test`兼容处理，不强制补写云审计。云端job必须显式填写`result_mode`为`cloud_shadow`或`cloud_codex`，并生成独立的`transcription-audit.json`，再嵌入`evidence-audit.json.transcription_route`。审计文件不写入PNG，也不作为默认交付物。
 
+当前r3任务的`evidence-audit.json`还必须包含试驾专项审计：
+
+```json
+{
+  "trial_review": {
+    "full_recording_trial_sweep": true,
+    "all_windows_reviewed": true,
+    "windows": [
+      {
+        "candidate_id": "E012",
+        "start": "05:00",
+        "end": "08:00",
+        "reason": "first_15_minutes",
+        "status": "confirmed",
+        "channel": "mix",
+        "model": "large-v3-turbo"
+      }
+    ],
+    "timeline": {
+      "events": [
+        {
+          "event_id": "T001",
+          "candidate_id": "E004",
+          "event_type": "invite",
+          "timestamp": "05:19-05:23",
+          "channel": "mix",
+          "model": "large-v3-turbo",
+          "adopted_reason": "原始音频复核确认独立有效邀约"
+        }
+      ],
+      "actual_drive_chain": false
+    }
+  }
+}
+```
+
+`full_recording_trial_sweep`表示完整主转写已经过试驾语义扫描，并完成规定的Turbo固定窗口，不表示整条录音再次全量Turbo转写。两次邀约必须对应不同时间事件；重复切片不能重复计数。实际试驾证据链与D1或D2-D9零分冲突时禁止出图。
+
 云端`evidence-audit.json`必须包含：
 
 ```json

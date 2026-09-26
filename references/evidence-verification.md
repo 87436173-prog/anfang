@@ -22,6 +22,14 @@
 
 `scripts/evidence_candidates.py`负责全量扫描、候选合并、切片、Turbo复核和证据审计。本地现行任务保持原调用：传入初次JSONL、原始WAV、输出目录和现有`transcribe_incremental.py`。云端任务还必须传入`transcription-audit.json`，并按 [transcription-routing.md](transcription-routing.md) 核验腾讯统一主转写和云端复核身份。任何环境都不得只运行候选扫描后跳过局部复核。
 
+### 试驾专项防漏判协议
+
+- 全量主转写必须执行高召回语义扫描，除“试驾/试乘”外还要覆盖“开一下、开一圈、感受一下、体验一下、再开一次”等表达，以及“试价、市价、车架”等常见近音误转。近音命中只生成候选，不能直接确认得分。
+- 无论关键词是否命中，候选器都要生成并复核前15分钟、录音最后25%和每个报价窗口前后90秒的`test_drive_sweep`固定窗口。这里的“全录音扫描”是完整主转写语义扫描加固定高精度窗口复核，不表示把整条录音重复跑一遍Turbo。
+- 试驾事件按`invite/agree/refuse/scheduled/deferred/paperwork/depart/dynamic/return/repeat`记录到有序时间线。手续证据与动态驾驶、返回或再次试驾证据组合时，形成`actual_drive_chain=true`；“再次试驾”必须触发对前段5至40分钟的回溯核验。
+- 同一或重叠时间窗生成的重复邀约不得计作两次。默认相隔不足45秒的邀约候选合并为同一事件；确有独立轮次时，人工审计须记录不同时间窗和采用理由。
+- D项为0、NA或实际试驾分档前，都必须完成专项窗口。审计缺少`full_recording_trial_sweep=true`、存在未复核窗口，或实际试驾链与D项零分冲突时，校验器必须阻止发布。
+
 ```powershell
 python scripts/evidence_candidates.py `
   --transcript initial.jsonl `
@@ -73,6 +81,8 @@ python scripts/validate_score_job.py --job job.json --audit evidence-review/evid
 - 上述两条的E模块必须按r2/r3报价六要素复核；缺少赠品、明确交期或客户确认的内饰颜色时，E2不得因长篇报价而自动得3分。
 - 吴洁—胡先生—大唐EV：原始立体声右声道00:18-00:27包含确认看车人、自我介绍、递名片和询问称呼；必须防止单声道混音漏判B3。
 - 张德民—邱先生—元UP：约00:35包含自我介绍及询问称呼；必须防止前三分钟固定窗口漏扫。用户补充“提供零食”不能自动推出三类小食达标。
+- 李增强—周先生：必须识别约05:19、08:09及报价前后多次邀约；后段“已经开过/不用试”不得导致前段邀约丢失。预期至少两次独立有效邀约。
+- 李增强—盛先生：必须把约07:30证件/手续、车内动态驾驶话术和约39:03再次试驾请求组成实际试驾证据链，并回溯确认前次试驾。
 
 这些案例只作为新流程回归，不自动生成、覆盖或发送历史报告。
 新任务的job与审计必须记录相同的`price_policy_version: "HB-2026-09-14"`，并依据完整9月快照复核价格、贷款返息和权益。D1为NA必须有confirmed的na_basis，D2-D9同步NA，D模块NA25。

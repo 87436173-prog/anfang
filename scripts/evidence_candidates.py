@@ -25,6 +25,7 @@ REQUIRED_CATEGORIES = (
     "test_drive_invite",
     "test_drive_response",
     "test_drive_actual",
+    "test_drive_sweep",
     "purchase_timing",
     "bonus_wet_tissue",
     "bonus_starbucks",
@@ -47,8 +48,9 @@ PATTERNS = {
         r"(?:颜色|配色|色系).{0,8}(?:内饰|座椅|舱内)",
     ),
     "test_drive_invite": (
-        r"要不要.{0,8}(?:试驾|试乘|开一下|体验一下)", r"可以.{0,8}(?:试驾|试乘|试一下)",
-        r"安排.{0,8}(?:试驾|试乘)", r"有试驾车", r"试驾一下|试乘试驾",
+        r"(?:要不要|是否|方便|愿不愿意|想不想|可以|再问一下).{0,12}(?:试驾|试乘|试价|市价|车架|开一下|开一圈|体验一下|感受一下)",
+        r"(?:亲自|自己|您来|你来).{0,8}(?:开一下|开一圈|体验一下|感受一下)",
+        r"安排.{0,8}(?:试驾|试乘|试价|车架)", r"有.{0,4}(?:试驾车|试乘车)", r"试驾一下|试乘试驾|再开一次|再试一次",
     ),
     "test_drive_response": (
         r"不用.{0,5}(?:试驾|试乘|试)", r"不想.{0,5}(?:试驾|试乘|试)", r"不试", r"拒绝.{0,5}试驾",
@@ -57,8 +59,8 @@ PATTERNS = {
         r"(?:下次|改天|回头).{0,8}(?:试驾|试乘|试一下|再试|再开)",
     ),
     "test_drive_actual": (
-        r"试驾协议|试驾登记|驾驶证|驾照", r"试驾路线|路线怎么走", r"出发|开出去|上路",
-        r"试驾结束|开回来|刚才试驾", r"方向盘|刹车|油门|加速" ,
+        r"试驾协议|试驾登记|驾驶证|驾照|登记.{0,8}(?:证件|手机号)", r"试驾路线|路线怎么走", r"出发|开出去|上路",
+        r"试驾结束|开回来|刚才试驾|刚才开", r"方向盘|刹车|油门|加速", r"再开一次|再试一次|还想再开",
     ),
     "purchase_timing": (
         r"今天.{0,10}(?:订|定|签|买|锁车)", r"明天.{0,10}(?:订|定|签|买|提车)",
@@ -148,10 +150,61 @@ def build_candidates(records: list[dict], context_ticks: int = 1200, merge_gap_t
                 "rationale": "",
                 "status": "pending",
             })
+    candidates.extend(build_trial_sweep_candidates(records))
     candidates.sort(key=lambda item: (item["start_ticks"], item["category"]))
     for index, item in enumerate(candidates, 1):
         item["id"] = f"E{index:03d}"
     return candidates
+
+
+def build_trial_sweep_candidates(records: list[dict], chunk_ticks: int = 18000) -> list[dict]:
+    """Build mandatory Turbo windows independent of literal test-drive keywords.
+
+    Windows cover the first 15 minutes, the final quarter, and 90 seconds
+    around every price/quote hit.  This deliberately favors recall: the sweep
+    is the negative-evidence check that makes a D=0 conclusion publishable.
+    """
+    if not records:
+        return []
+    total_end = max(row["t1"] for row in records)
+    ranges: set[tuple[int, int, str]] = set()
+
+    def add_chunks(start: int, end: int, reason: str) -> None:
+        start = max(0, start)
+        end = min(total_end, end)
+        cursor = start
+        while cursor < end:
+            window_end = min(end, cursor + chunk_ticks)
+            ranges.add((cursor, window_end, reason))
+            cursor = window_end
+
+    add_chunks(0, min(total_end, 15 * 60 * 100), "first_15_minutes")
+    add_chunks(int(total_end * 0.75), total_end, "last_quarter")
+    for hit in category_hits(records).get("price_policy", []):
+        ranges.add((max(0, hit["t0"] - 9000), min(total_end, hit["t1"] + 9000), "around_quote"))
+    repeat_pattern = re.compile(r"再开一次|再试一次|还想再开|还.{0,6}试驾车")
+    for row in records:
+        if repeat_pattern.search(normalize(row["text"])):
+            add_chunks(row["t0"] - 40 * 60 * 100, row["t0"] - 5 * 60 * 100, "repeat_backtrack_5_to_40_minutes")
+
+    return [
+        {
+            "category": "test_drive_sweep",
+            "start_ticks": start,
+            "end_ticks": end,
+            "timestamp": f"{timestamp(start)}-{timestamp(end)}",
+            "initial_transcript": text_for_window(records, start, end),
+            "trigger_terms": [reason],
+            "is_late_section": start >= total_end * 0.75,
+            "review_transcript": "",
+            "adopted_conclusion": "",
+            "rationale": "",
+            "status": "pending",
+            "sweep_reason": reason,
+        }
+        for start, end, reason in sorted(ranges)
+        if end > start
+    ]
 
 
 def write_wav_slice(source: Path, target: Path, start_ticks: int, end_ticks: int) -> None:
@@ -178,12 +231,16 @@ def extract_signals(text: str) -> dict:
     models = sorted(name for name, aliases in MODEL_ALIASES.items() if any(normalize(alias) in value for alias in aliases))
     amounts = sorted(set(re.findall(r"\d+(?:\.\d+)?(?:万|元|块|个点)", value)))
     trial = sorted(name for name, pattern in {
-        "invite": r"试驾|试乘|有试驾车|开一下|体验一下",
+        "invite": r"(?:要不要|是否|方便|愿不愿意|想不想|可以|再问一下).{0,12}(?:试驾|试乘|试价|市价|车架|开一下|开一圈|体验一下|感受一下)|(?:亲自|自己|您来|你来).{0,8}(?:开一下|开一圈|体验一下|感受一下)",
         "agree": r"可以试|愿意试|要开一下|去试|安排吧",
         "scheduled": r"(?:明天|后天|周末|下周|星期[一二三四五六日天]|周[一二三四五六日天]|上午|下午|晚上).{0,20}(?:试驾|试乘|试一下|开一下|提前试)",
         "deferred": r"(?:下次|改天|回头).{0,8}(?:试驾|试乘|试一下|再试|再开)",
         "refuse": r"不用试|不试驾|不想试|拒绝试驾",
-        "actual": r"试驾协议|试驾登记|驾驶证|试驾路线|开出去|试驾结束|刚才试驾",
+        "paperwork": r"试驾协议|试驾登记|驾驶证|驾照|登记.{0,8}(?:证件|手机号)",
+        "depart": r"试驾路线|路线怎么走|出发|开出去|上路",
+        "dynamic": r"方向盘|刹车|油门|加速",
+        "return": r"试驾结束|开回来|刚才试驾|刚才开",
+        "repeat": r"再开一次|再试一次|还想再开|还.{0,6}试驾车",
     }.items() if re.search(pattern, value))
     timing = sorted(set(re.findall(r"(?:今天|明天|三天内|3天内|本周内|这个星期|星期内|月底前|一个月内|近期).{0,10}(?:订|定|签|买|提车)?", value)))
     quote = {
@@ -214,7 +271,8 @@ def category_confirmed(category: str, signals: dict) -> bool:
         "interior_color": signals["quote_components"]["interior_color"],
         "test_drive_invite": "invite" in signals["trial"],
         "test_drive_response": bool({"agree", "scheduled", "deferred", "refuse"} & set(signals["trial"])),
-        "test_drive_actual": "actual" in signals["trial"],
+        "test_drive_actual": bool({"paperwork", "depart", "dynamic", "return", "repeat"} & set(signals["trial"])),
+        "test_drive_sweep": True,
         "purchase_timing": bool(signals["timing"]),
         "bonus_wet_tissue": signals["wet_tissue"],
         "bonus_starbucks": signals["starbucks"],
@@ -230,6 +288,16 @@ def compare_signals(category: str, initial_text: str, review_text: str) -> tuple
     initial["raw"] = normalize(initial_text)
     reviewed["raw"] = normalize(review_text)
     reasons: list[str] = []
+    if category == "test_drive_sweep":
+        trial_events = reviewed["trial"]
+        rationale = "试驾专项固定窗口已由高精度模型复核"
+        if trial_events:
+            rationale += "，发现事件：" + ",".join(trial_events)
+        else:
+            rationale += "，未发现可确认试驾事件"
+        initial.pop("raw", None)
+        reviewed.pop("raw", None)
+        return "confirmed", rationale, initial, reviewed
     if not category_confirmed(category, reviewed):
         reasons.append("二次复核未确认该类关键行为或实体")
     if category == "price_policy" and initial["amounts"] and reviewed["amounts"]:
@@ -274,6 +342,38 @@ def derive_quote_completeness(candidates: list[dict]) -> dict:
     return {"components": combined, "complete": all(combined.values())}
 
 
+def derive_trial_timeline(candidates: list[dict]) -> dict:
+    event_types = ("invite", "agree", "refuse", "scheduled", "deferred", "paperwork", "depart", "dynamic", "return", "repeat")
+    events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in sorted(candidates, key=lambda value: (value.get("start_ticks", 0), value.get("id", ""))):
+        if item.get("status") != "confirmed":
+            continue
+        signals = item.get("review_signals", {}).get("trial", [])
+        for event_type in event_types:
+            if event_type not in signals:
+                continue
+            key = (event_type, item.get("timestamp", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append({
+                "event_id": f"T{len(events) + 1:03d}",
+                "candidate_id": item.get("id"),
+                "event_type": event_type,
+                "timestamp": item.get("timestamp"),
+                "window": [item.get("start_ticks"), item.get("end_ticks")],
+                "channel": item.get("review_channel", "mix"),
+                "model": item.get("review_model", "large-v3-turbo"),
+                "adopted_reason": item.get("rationale", ""),
+            })
+    found = {item["event_type"] for item in events}
+    actual_drive_chain = (
+        "paperwork" in found and bool({"dynamic", "return", "repeat"} & found)
+    ) or ("depart" in found and "dynamic" in found) or ("return" in found and "repeat" in found)
+    return {"events": events, "actual_drive_chain": actual_drive_chain}
+
+
 def load_transcription_audit(path: Path) -> dict:
     audit = json.loads(path.read_text(encoding="utf-8"))
     if audit.get("schema_version") != TRANSCRIPTION_AUDIT_SCHEMA:
@@ -291,6 +391,9 @@ def build_audit(transcript: Path, candidates: list[dict], transcription_audit: d
             "status": "scanned_no_candidates" if count == 0 else ("reviewed" if states == {"confirmed"} else "attention_required"),
         }
     coverage["negative_incentive"] = {"candidate_count": 0, "status": "derived_by_score_validator"}
+    sweep = [item for item in candidates if item["category"] == "test_drive_sweep"]
+    all_sweep_reviewed = bool(sweep) and all(item.get("status") == "confirmed" for item in sweep)
+    timeline = derive_trial_timeline(candidates)
     audit = {
         "rule_version": RULE_VERSION,
         "price_policy_version": PRICE_POLICY_VERSION,
@@ -298,6 +401,23 @@ def build_audit(transcript: Path, candidates: list[dict], transcription_audit: d
         "review_model": HIGH_PRECISION_MODEL,
         "coverage": coverage,
         "derived": {"quote_completeness": derive_quote_completeness(candidates)},
+        "trial_review": {
+            "full_recording_trial_sweep": all_sweep_reviewed,
+            "all_windows_reviewed": all_sweep_reviewed,
+            "windows": [
+                {
+                    "candidate_id": item.get("id"),
+                    "start": timestamp(item["start_ticks"]),
+                    "end": timestamp(item["end_ticks"]),
+                    "reason": item.get("sweep_reason"),
+                    "status": item.get("status"),
+                    "channel": item.get("review_channel", "mix"),
+                    "model": item.get("review_model", "large-v3-turbo"),
+                }
+                for item in sweep
+            ],
+            "timeline": timeline,
+        },
         "candidates": candidates,
     }
     if transcription_audit is not None:

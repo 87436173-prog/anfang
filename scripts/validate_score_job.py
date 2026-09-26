@@ -16,7 +16,7 @@ SUPPORTED_RULE_VERSIONS = {RULE_VERSION, *LEGACY_RULE_VERSIONS}
 CANONICAL_MAX = {"A": 10, "B": 25, "C": 20, "D": 25, "E": 5, "F": 5, "G": 10}
 REQUIRED_COVERAGE = {
     "model_configuration", "price_policy", "interior_color", "test_drive_invite", "test_drive_response",
-    "test_drive_actual", "purchase_timing", "bonus_wet_tissue", "bonus_starbucks",
+    "test_drive_actual", "test_drive_sweep", "purchase_timing", "bonus_wet_tissue", "bonus_starbucks",
     "h_veto", "na_basis", "negative_incentive",
 }
 TIMESTAMP_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
@@ -86,6 +86,28 @@ def confirmed_candidates(audit: dict, category: str) -> list[dict]:
 
 def has_timestamp(value: object) -> bool:
     return bool(TIMESTAMP_RE.search(str(value or "")))
+
+
+def timestamp_seconds(value: object) -> int | None:
+    match = TIMESTAMP_RE.search(str(value or ""))
+    if not match:
+        return None
+    minutes, seconds = match.group(0).split(":", 1)
+    return int(minutes) * 60 + int(seconds)
+
+
+def distinct_invitation_count(candidates: list[dict], minimum_gap_seconds: int = 45) -> int:
+    """Count invitation events, collapsing duplicate/overlapping audit windows."""
+    times = sorted(
+        timestamp
+        for timestamp in (timestamp_seconds(item.get("timestamp")) for item in candidates)
+        if timestamp is not None
+    )
+    distinct: list[int] = []
+    for value in times:
+        if not distinct or value - distinct[-1] >= minimum_gap_seconds:
+            distinct.append(value)
+    return len(distinct)
 
 
 def validate_rows(job: dict, errors: list[str]) -> None:
@@ -221,13 +243,22 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("job.negative_incentive conflicts with deterministic calculation")
 
     coverage = audit.get("coverage", {})
-    required_coverage = REQUIRED_COVERAGE if job_version != "6.0-G-HB-2026-08-27-r1" else REQUIRED_COVERAGE - {"interior_color"}
+    if job_version == RULE_VERSION:
+        required_coverage = REQUIRED_COVERAGE
+    elif job_version == "6.0-G-HB-2026-08-27-r1":
+        required_coverage = REQUIRED_COVERAGE - {"interior_color", "test_drive_sweep"}
+    else:
+        required_coverage = REQUIRED_COVERAGE - {"test_drive_sweep"}
     missing = required_coverage - set(coverage)
     if missing:
         errors.append(f"Missing audit coverage: {sorted(missing)}")
     unresolved = [item.get("id", "unknown") for item in audit.get("candidates", []) if item.get("status") != "confirmed"]
     if unresolved:
         errors.append(f"Unresolved high-impact evidence: {unresolved}")
+    if job_version == RULE_VERSION:
+        trial_review = audit.get("trial_review", {})
+        if trial_review.get("full_recording_trial_sweep") is not True or trial_review.get("all_windows_reviewed") is not True:
+            errors.append("Current rule requires a completed full-recording trial sweep before publication")
 
     if not has_timestamp(job.get("models_of_interest", {}).get("evidence")):
         errors.append("models_of_interest.evidence lacks timestamp")
@@ -251,7 +282,7 @@ def validate(job: dict, audit: dict) -> dict:
             "scheduled" in item.get("review_signals", {}).get("trial", [])
             for item in drive_responses_for_na
         )
-        if not na_candidates and len(drive_invites) < 2 and not scheduled_next_drive:
+        if not na_candidates and distinct_invitation_count(drive_invites) < 2 and not scheduled_next_drive:
             errors.append("NA requires confirmed refusal/NA evidence or two confirmed test-drive invitations")
     if bonus > 0:
         bonus_candidates = confirmed_candidates(audit, "bonus_wet_tissue") + confirmed_candidates(audit, "bonus_starbucks")
@@ -276,18 +307,25 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("D1=NA requires confirmed NA-basis evidence")
     if d1_na_cascade and (seen.get("D") != (0, 0) or na < 25):
         errors.append("D1=NA requires full D module NA25 with applicable max/score 0/0")
-    if d1_value == 5 and not drive_actual and len(drive_invites) < 2:
+    distinct_drive_invites = distinct_invitation_count(drive_invites)
+    timeline = audit.get("trial_review", {}).get("timeline", {})
+    actual_drive_confirmed = bool(drive_actual) or timeline.get("actual_drive_chain") is True
+    if d1_value == 5 and not actual_drive_confirmed and distinct_drive_invites < 2:
         errors.append("D1=5 without actual test drive requires two confirmed effective invitations")
-    if d1_value == 5 and drive_actual and not drive_invites:
+    if d1_value == 5 and actual_drive_confirmed and not drive_invites:
         errors.append("D1=5 requires confirmed invitation evidence")
-    if d2_d9_value in {15, 20} and not drive_actual:
+    if d1_value == 0 and actual_drive_confirmed:
+        errors.append("D1=0 conflicts with confirmed actual test-drive evidence; verify invitation or customer-initiated NA")
+    if d2_d9_value == 0 and actual_drive_confirmed:
+        errors.append("D2-D9=0 conflicts with confirmed actual test-drive evidence")
+    if d2_d9_value in {15, 20} and not actual_drive_confirmed:
         errors.append("D2-D9 test-drive score requires confirmed actual test drive evidence")
     if d2_d9_value == "NA":
         scheduled_next_drive = "scheduled" in response_signals
         deferred_next_drive = "deferred" in response_signals
-        if not d1_na_cascade and len(drive_invites) < 2 and not scheduled_next_drive:
-            errors.append("D2-D9=NA requires two confirmed effective invitations or a confirmed next-drive schedule")
-        if not d1_na_cascade and "agree" in response_signals and not drive_actual and not scheduled_next_drive and not deferred_next_drive:
+        if not d1_na_cascade and distinct_drive_invites < 2 and not scheduled_next_drive:
+            errors.append("D2-D9=NA requires two distinct confirmed effective invitations or a confirmed next-drive schedule")
+        if not d1_na_cascade and "agree" in response_signals and not actual_drive_confirmed and not scheduled_next_drive and not deferred_next_drive:
             errors.append("D2-D9 cannot be NA when customer agreed but sales did not arrange the drive")
 
     if "E" in seen:
