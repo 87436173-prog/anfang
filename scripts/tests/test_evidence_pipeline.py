@@ -21,6 +21,7 @@ def load_module(name: str, filename: str):
 
 evidence = load_module("byd_evidence_candidates", "evidence_candidates.py")
 validator = load_module("byd_validate_score_job", "validate_score_job.py")
+renderer = load_module("byd_render_report", "render_report.py")
 
 
 def row(t0: int, t1: int, text: str) -> dict:
@@ -148,6 +149,37 @@ class EvidenceCandidateRegressionTests(unittest.TestCase):
         self.assertIn("金额冲突", rationale)
 
 
+class PricePolicyRegressionTests(unittest.TestCase):
+    @staticmethod
+    def review_job(model: str, strict_status: str) -> dict:
+        strict = {"status": strict_status}
+        if strict_status == "是":
+            strict.update({
+                "series": model,
+                "trim": "已确认",
+                "filed_price": "已确认",
+                "policy_basis": "HB-2026-09-17",
+            })
+        return {
+            "models_of_interest": {
+                "primary": model,
+                "own_brand": [model],
+                "competitors": ["未提及"],
+                "evidence": "00:30确认车型",
+            },
+            "intention": {"level": "C", "reason": "继续考虑", "evidence": "10:00继续考虑"},
+            "strict_control": strict,
+            "compliance": [],
+        }
+
+    def test_2027_yuanup_feichi_is_general_model(self):
+        renderer.validate_review_fields(self.review_job("2027款元UP飞驰版 401KM领航型", "否"))
+
+    def test_yuanup_zhijia_still_requires_strict_control(self):
+        with self.assertRaises(ValueError):
+            renderer.validate_review_fields(self.review_job("元UP智驾版 401KM活力型", "否"))
+
+
 class DeterministicScoreValidationTests(unittest.TestCase):
     def setUp(self):
         self.job = {
@@ -252,7 +284,7 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("E2=3" in error for error in result["errors"]))
 
-    def test_e2_three_points_requires_confirmed_interior_color(self):
+    def test_e2_three_points_requires_reviewed_interior_color_explanation(self):
         job, audit = self.valid_job_and_audit()
         job["modules"][4] = ["E 报价成交", 5, 5]
         job["base"] = 53
@@ -270,7 +302,7 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         result = validator.validate(job, audit)
         self.assertFalse(result["valid"])
         self.assertTrue(any("quote_confirmation" in error for error in result["errors"]))
-        self.assertTrue(any("interior_color audit candidate" in error for error in result["errors"]))
+        self.assertTrue(any("interior_color explanation audit candidate" in error for error in result["errors"]))
 
     def test_confirmed_interior_color_allows_e2_three_points(self):
         job, audit = self.valid_job_and_audit()
@@ -280,6 +312,30 @@ class DeterministicScoreValidationTests(unittest.TestCase):
             "status": "已确认",
             "interior_color": "棕色",
             "evidence": "12:05客户确认棕色内饰",
+        }
+        audit["derived"]["quote_completeness"] = {
+            "complete": True,
+            "components": {
+                "vehicle_or_price": True,
+                "payment_or_finance": True,
+                "fees": True,
+                "gifts": True,
+                "delivery": True,
+                "interior_color": True,
+            },
+        }
+        audit["candidates"].append(self.confirmed("interior_color", "E004"))
+        result = validator.validate(job, audit)
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_sales_explained_interior_color_without_customer_choice_allows_e2(self):
+        job, audit = self.valid_job_and_audit()
+        job["modules"][4] = ["E 报价成交", 5, 5]
+        job["base"] = 53
+        job["quote_confirmation"] = {
+            "status": "已讲解",
+            "interior_color": "销售说明有棕色内饰；客户未选择",
+            "evidence": "12:05销售向客户讲解棕色内饰",
         }
         audit["derived"]["quote_completeness"] = {
             "complete": True,

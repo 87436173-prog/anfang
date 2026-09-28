@@ -151,7 +151,14 @@ def validate_review_fields(job):
         "元up", "第三代元plus", "汉ev闪充版", "大唐ev",
     )
     own_models = [normalized_model(item) for item in models["own_brand"]]
-    detected = any(token in item for item in own_models for token in strict_tokens)
+    # 2027款元UP飞驰版自HB-2026-09-17起明确为一般车型；
+    # 旧元UP智驾版仍保留既有严管覆盖。
+    detected = any(
+        token in item
+        for item in own_models
+        if "2027款元up飞驰版" not in item
+        for token in strict_tokens
+    )
     if detected and status != "是":
         raise ValueError("本品关注车型命中严管车系，strict_control.status必须为是")
 

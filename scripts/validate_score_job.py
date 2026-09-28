@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
-PRICE_POLICY_VERSION = "HB-2026-09-14"
+PRICE_POLICY_VERSION = "HB-2026-09-17"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1", "6.0-G-HB-2026-08-27-r2"}
 SUPPORTED_RULE_VERSIONS = {RULE_VERSION, *LEGACY_RULE_VERSIONS}
@@ -299,6 +299,9 @@ def validate(job: dict, audit: dict) -> dict:
     }
     d1_value = row_value(job, "D1")
     d2_d9_value = row_value(job, "D2-D9")
+    distinct_drive_invites = distinct_invitation_count(drive_invites)
+    timeline = audit.get("trial_review", {}).get("timeline", {})
+    actual_drive_confirmed = bool(drive_actual) or timeline.get("actual_drive_chain") is True
     # User rule updated 2026-09-15: D1 NA always makes the full drive module NA.
     d1_na_cascade = d1_value == "NA"
     if d1_na_cascade and d2_d9_value != "NA":
@@ -307,9 +310,6 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("D1=NA requires confirmed NA-basis evidence")
     if d1_na_cascade and (seen.get("D") != (0, 0) or na < 25):
         errors.append("D1=NA requires full D module NA25 with applicable max/score 0/0")
-    distinct_drive_invites = distinct_invitation_count(drive_invites)
-    timeline = audit.get("trial_review", {}).get("timeline", {})
-    actual_drive_confirmed = bool(drive_actual) or timeline.get("actual_drive_chain") is True
     if d1_value == 5 and not actual_drive_confirmed and distinct_drive_invites < 2:
         errors.append("D1=5 without actual test drive requires two confirmed effective invitations")
     if d1_value == 5 and actual_drive_confirmed and not drive_invites:
@@ -333,16 +333,16 @@ def validate(job: dict, audit: dict) -> dict:
         e2_awarded = (e_max == 5 and e_score in {3, 5}) or (e_max == 3 and e_score == 3)
         quote = audit.get("derived", {}).get("quote_completeness", {})
         if e2_awarded and not quote.get("complete"):
-            errors.append("E2=3 requires confirmed vehicle/price, payment/finance, fees, gifts, delivery and interior-color evidence")
+            errors.append("E2=3 requires confirmed vehicle/price, payment/finance, fees, gifts, delivery and sales interior-color explanation evidence")
         if job_version != "6.0-G-HB-2026-08-27-r1" and e2_awarded:
             confirmation = job.get("quote_confirmation", {})
             interior_color = str(confirmation.get("interior_color", "")).strip()
-            if confirmation.get("status") != "已确认" or not interior_color or interior_color in {"未确认", "待核实"}:
-                errors.append("E2=3 requires quote_confirmation.status=已确认 and a confirmed interior_color")
+            if confirmation.get("status") not in {"已确认", "已讲解"} or not interior_color or interior_color in {"未确认", "待核实"}:
+                errors.append("E2=3 requires quote_confirmation.status=已确认/已讲解 and an explained interior_color")
             if not has_timestamp(confirmation.get("evidence")):
-                errors.append("E2=3 requires timestamped interior-color confirmation evidence")
+                errors.append("E2=3 requires timestamped sales interior-color explanation evidence")
             if not confirmed_candidates(audit, "interior_color"):
-                errors.append("E2=3 requires a confirmed interior_color audit candidate")
+                errors.append("E2=3 requires a confirmed interior_color explanation audit candidate")
         if not quote:
             warnings.append("quote completeness derivation is absent")
 
