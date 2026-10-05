@@ -1,0 +1,7 @@
+interface:
+  display_name: "销售部月度总结"
+  short_description: "制作店内销售月报与个人复盘，核对利润接待和衍生业务数据，沿用可编辑PPT模板"
+  icon_large: "./assets/preview.png"
+  default_prompt: "使用 $artifact-template-sales-monthly-review，根据我提供的当月资料制作销售部月度总结和销售顾问个人复盘，核对数据、接待成绩及渗透率排名，沿用店内模板并完成去AI味和排版检查。"
+policy:
+  allow_implicit_invocation: true
