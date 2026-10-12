@@ -29,6 +29,7 @@ REQUIRED_CATEGORIES = (
     "purchase_timing",
     "bonus_wet_tissue",
     "bonus_starbucks",
+    "starbucks_introduction",
     "h_veto",
     "na_basis",
 )
@@ -41,7 +42,7 @@ PATTERNS = {
     ),
     "price_policy": (
         r"\d+(?:\.\d+)?\s*(?:万|元|块|个点)", r"价格|报价|落地|裸车|成交价", r"优惠|补贴|返息|返现|免息",
-        r"保险|购置税|上牌|服务费", r"赠送|礼品|精品|保养|充电桩", r"交车|提车周期|到车", r"内饰颜色|座椅颜色|内饰配色",
+        r"保险|购置税|上牌|服务费", r"赠送|礼品|精品|保养|充电桩", r"交车|提车周期|到车", r"(?:预计|大概|差不多|需要|等).{0,6}(?:\d+|[一二三四五六七八九十]+)(?:天|周|个月)", r"内饰颜色|座椅颜色|内饰配色",
     ),
     "interior_color": (
         r"(?:内饰|座椅|舱内).{0,8}(?:颜色|配色|色系)",
@@ -51,12 +52,17 @@ PATTERNS = {
         r"(?:要不要|是否|方便|愿不愿意|想不想|可以|再问一下).{0,12}(?:试驾|试乘|试价|市价|车架|开一下|开一圈|体验一下|感受一下)",
         r"(?:亲自|自己|您来|你来).{0,8}(?:开一下|开一圈|体验一下|感受一下)",
         r"安排.{0,8}(?:试驾|试乘|试价|车架)", r"有.{0,4}(?:试驾车|试乘车)", r"试驾一下|试乘试驾|再开一次|再试一次",
+        r"(?:再邀|再次邀请|再问|再安排).{0,12}(?:开一下|开一圈|试驾|试乘|体验|感受)",
     ),
     "test_drive_response": (
         r"不用.{0,5}(?:试驾|试乘|试)", r"不想.{0,5}(?:试驾|试乘|试)", r"不试", r"拒绝.{0,5}试驾",
         r"可以.{0,5}(?:试驾|试乘|开)", r"愿意.{0,5}(?:试驾|试乘|开)", r"要开一下|去试|安排吧",
         r"(?:明天|后天|周末|下周|星期[一二三四五六日天]|周[一二三四五六日天]|上午|下午|晚上).{0,20}(?:试驾|试乘|试一下|开一下|提前试)",
         r"(?:下次|改天|回头).{0,8}(?:试驾|试乘|试一下|再试|再开)",
+    ),
+    "test_drive_default_basis": (
+        r"签.{0,8}协议|协议.{0,8}签",
+        r"选.{0,8}(?:路线|短线|长线)|(?:路线|短线|长线).{0,8}(?:选|走)|就走.{0,6}(?:短线|长线)",
     ),
     "test_drive_actual": (
         r"试驾协议|试驾登记|驾驶证|驾照|登记.{0,8}(?:证件|手机号)", r"试驾路线|路线怎么走", r"出发|开出去|上路",
@@ -68,6 +74,7 @@ PATTERNS = {
         r"订车|定车|下定|订金|定金|锁车|什么时候买|什么时候提车|提车时间",
     ),
     "bonus_wet_tissue": (r"湿纸巾|湿巾",),
+    "starbucks_introduction": (r"星巴克|星巴客|星八克|Starbucks", r"咖啡"),
     "bonus_starbucks": (r"星巴克", r"喝.{0,6}咖啡|咖啡.{0,6}(?:喝|饮用)"),
     "h_veto": (
         r"暗访|神秘客|检查人员|检查组", r"红包|行贿|打点", r"滚出去|驱赶", r"恐吓|威胁",
@@ -180,7 +187,10 @@ def build_trial_sweep_candidates(records: list[dict], chunk_ticks: int = 18000) 
 
     add_chunks(0, min(total_end, 15 * 60 * 100), "first_15_minutes")
     add_chunks(int(total_end * 0.75), total_end, "last_quarter")
+    from feedback_policy import price_candidate_relevant
     for hit in category_hits(records).get("price_policy", []):
+        if not price_candidate_relevant(hit["text"]):
+            continue
         ranges.add((max(0, hit["t0"] - 9000), min(total_end, hit["t1"] + 9000), "around_quote"))
     repeat_pattern = re.compile(r"再开一次|再试一次|还想再开|还.{0,6}试驾车")
     for row in records:
@@ -273,9 +283,11 @@ def category_confirmed(category: str, signals: dict) -> bool:
         "test_drive_response": bool({"agree", "scheduled", "deferred", "refuse"} & set(signals["trial"])),
         "test_drive_actual": bool({"paperwork", "depart", "dynamic", "return", "repeat"} & set(signals["trial"])),
         "test_drive_sweep": True,
+        "test_drive_default_basis": False,  # Completed trial agreement/route choice requires semantic adjudication.
         "purchase_timing": bool(signals["timing"]),
         "bonus_wet_tissue": signals["wet_tissue"],
         "bonus_starbucks": signals["starbucks"],
+        "starbucks_introduction": False,  # Customer-directed introduction needs semantic adjudication.
         "h_veto": signals["h_veto"],
         "na_basis": signals["na_basis"],
     }

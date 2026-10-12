@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import math
 import re
 from pathlib import Path
+from starbucks_review import validate_audit as validate_starbucks_introduction
+from trial_assessment import is_inferred, semantic_trial, validate_semantic_trial
+import feedback_policy as feedback
+import service_policy as service
 
 
 RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
 PRICE_POLICY_VERSION = "HB-2026-09-17"
+TRIAL_ITEMWISE_VERSION = "trial-itemwise-2026-10-12-v1"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1", "6.0-G-HB-2026-08-27-r2"}
 SUPPORTED_RULE_VERSIONS = {RULE_VERSION, *LEGACY_RULE_VERSIONS}
@@ -31,6 +37,50 @@ B_SCORES = possible_sums([
 ])
 C_SCORES = possible_sums([{0, 2}, {0, 3}, {0, 3}, {0, 2, 4}, {0, 2}, {0, 3}, {0, 1, 3}])
 
+
+def validated_matched_safety_veto(job: dict, audit: dict) -> bool:
+    """Permit D=0 after an actual drive only with the matching independent safety audit."""
+    if job.get("trial_safety_policy_version") == TRIAL_ITEMWISE_VERSION:
+        return False
+    policy = audit.get("full_D_policy", {})
+    adjudication = audit.get("trial_safety_adjudication", {})
+    match = job.get("trial_match", {})
+    if not (job.get("D_safety_veto") is True
+            and policy.get("mode") == "matched_trial_safety_veto"
+            and adjudication.get("status") == "confirmed_D_safety_veto"
+            and match.get("status") == "confirmed"
+            and audit.get("trial_match") == match
+            and match.get("evidence")):
+        return False
+    source_path = Path(str(policy.get("source_job", "")))
+    source_hash = str(policy.get("source_job_sha256", "")).upper()
+    if not (source_path.is_file() and len(source_hash) == 64
+            and Path(str(match.get("source_job", ""))) == source_path
+            and Path(str(adjudication.get("trial_job_ref", ""))) == source_path
+            and str(adjudication.get("trial_job_sha256", "")).upper() == source_hash
+            and str(match.get("trial_sha256", "")).upper() == str(policy.get("trial_sha256", "")).upper()
+            and str(match.get("receipt_sha256", "")).upper() == str(policy.get("receipt_sha256", "")).upper()):
+        return False
+    if hashlib.sha256(source_path.read_bytes()).hexdigest().upper() != source_hash:
+        return False
+    try:
+        source = json.loads(source_path.read_text(encoding="utf-8-sig"))
+        source_audit = json.loads((source_path.parent / "evidence-audit.json").read_text(encoding="utf-8-sig"))
+        source_manifest = json.loads((source_path.parent / "source-manifest.json").read_text(encoding="utf-8-sig"))
+        source_validation = json.loads((source_path.parent / "source-validation.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    safety_id = adjudication.get("trial_candidate_id")
+    return (source.get("independent_scoring_complete") is True
+            and source.get("D_safety_veto") is True
+            and {row[1] for row in source.get("rows", []) if row[0] == "D"} == {f"D{i}" for i in range(1, 10)}
+            and all(row[4] == 0 for row in source.get("rows", []) if row[0] == "D")
+            and source_validation.get("valid") is True
+            and str(source_manifest.get("sha256", "")).upper() == str(match.get("trial_sha256", "")).upper()
+            and any(candidate.get("id") == safety_id
+                    and candidate.get("category") == "trial_safety"
+                    and candidate.get("fact_status") == "confirmed"
+                    for candidate in source_audit.get("candidates", [])))
 
 def module_letter(name: str) -> str:
     match = re.search(r"[A-G]", str(name).upper())
@@ -81,7 +131,7 @@ def negative_incentive(score: int) -> str:
 
 
 def confirmed_candidates(audit: dict, category: str) -> list[dict]:
-    return [item for item in audit.get("candidates", []) if item.get("category") == category and item.get("status") == "confirmed"]
+    return [item for item in audit.get("candidates", []) if item.get("category") == category and item.get("status") == "confirmed" and item.get("fact_status") not in {"rejected", "unresolved", "inferred"} and not is_inferred(item)]
 
 
 def has_timestamp(value: object) -> bool:
@@ -128,7 +178,11 @@ def validate_rows(job: dict, errors: list[str]) -> None:
             continue
         key = str(row[1])
         value = row[4]
-        if key in allowed and value not in allowed[key]:
+        item_allowed = allowed.get(key, set()) | ({'NA'} if service.active(job) and key in {'B6','F2','F3'} else set())
+        if service.active(job):
+            item_allowed |= {service.NEGATIVE_SCORES[key]} if key in service.NEGATIVE_SCORES else set()
+            if key in {'A1','A2'}: item_allowed -= {'NA'}
+        if key in allowed and value not in item_allowed:
             errors.append(f"Disallowed score for {key}: {value}")
         if key in allowed and value != "NA" and not has_timestamp(row[5]) and int(value) != 0:
             errors.append(f"Scored row lacks timestamp: {key}")
@@ -206,6 +260,14 @@ def validate(job: dict, audit: dict) -> dict:
             errors.append("Current job requires price_policy_version=" + PRICE_POLICY_VERSION)
         if audit.get("price_policy_version") != PRICE_POLICY_VERSION:
             errors.append("Current audit requires price_policy_version=" + PRICE_POLICY_VERSION)
+    itemwise_required = (str(job.get("report_date", "")) >= "2026-10-12"
+                         or job.get("trial_safety_policy_version") is not None
+                         or audit.get("trial_safety_policy_version") is not None)
+    if itemwise_required:
+        if job.get("trial_safety_policy_version") != TRIAL_ITEMWISE_VERSION or audit.get("trial_safety_policy_version") != TRIAL_ITEMWISE_VERSION:
+            errors.append("Job/audit require matching trial-itemwise-2026-10-12-v1 policy")
+        if job.get("D_safety_veto") is True or audit.get("full_D_policy", {}).get("mode") == "matched_trial_safety_veto":
+            errors.append("Completed trial safety incident cannot zero the whole D module")
 
     modules = job.get("modules", [])
     seen: dict[str, tuple[int, int]] = {}
@@ -220,7 +282,7 @@ def validate(job: dict, audit: dict) -> dict:
         seen[letter] = (applicable_max, score)
         if applicable_max > CANONICAL_MAX[letter] or applicable_max < 0:
             errors.append(f"Invalid applicable max for {letter}: {applicable_max}")
-        if not allowed_module_score(letter, applicable_max, score):
+        if not (letter=='D' and feedback.detailed_trial(job) and 0<=score<=applicable_max<=25) and not service.module_score_allowed(job,letter,applicable_max,score) and not allowed_module_score(letter, applicable_max, score):
             errors.append(f"Disallowed module score: {letter} {score}/{applicable_max}")
     if set(seen) != set(CANONICAL_MAX):
         errors.append("Modules must contain A-G exactly once")
@@ -232,8 +294,8 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("base does not equal the sum of module scores")
     if modules and sum(maximum for maximum, _ in seen.values()) != 100 - na:
         errors.append("applicable module maxima do not equal 100-NA")
-    if bonus not in {0, 3, 6, 9}:
-        errors.append(f"bonus must be 0/3/6/9, got {bonus}")
+    if bonus not in (service.BONUS_TOTALS if service.active(job) else {0, 3, 6, 9}):
+        errors.append(f"bonus does not match allowed independent service awards: {bonus}")
 
     calculated = final_score(base, na, bonus) if base >= 0 and 0 <= na < 100 else -1
     if "final_score" in job and int(job["final_score"]) != calculated:
@@ -252,12 +314,12 @@ def validate(job: dict, audit: dict) -> dict:
     missing = required_coverage - set(coverage)
     if missing:
         errors.append(f"Missing audit coverage: {sorted(missing)}")
-    unresolved = [item.get("id", "unknown") for item in audit.get("candidates", []) if item.get("status") != "confirmed"]
+    unresolved = [item.get("id", "unknown") for item in audit.get("candidates", []) if item.get("status") != "confirmed" and not feedback.closed_pending(item,job)]
     if unresolved:
         errors.append(f"Unresolved high-impact evidence: {unresolved}")
     if job_version == RULE_VERSION:
         trial_review = audit.get("trial_review", {})
-        if trial_review.get("full_recording_trial_sweep") is not True or trial_review.get("all_windows_reviewed") is not True:
+        if not feedback.scan_completed(audit) and (trial_review.get("full_recording_trial_sweep") is not True or trial_review.get("all_windows_reviewed") is not True):
             errors.append("Current rule requires a completed full-recording trial sweep before publication")
 
     if not has_timestamp(job.get("models_of_interest", {}).get("evidence")):
@@ -274,7 +336,7 @@ def validate(job: dict, audit: dict) -> dict:
     if job.get("strict_control", {}).get("status") == "是" and not confirmed_candidates(audit, "model_configuration"):
         errors.append("Strict-control status requires confirmed model/configuration evidence")
 
-    if na > 0:
+    if na > 0 and not service.active(job):
         na_candidates = confirmed_candidates(audit, "na_basis")
         drive_invites = confirmed_candidates(audit, "test_drive_invite")
         drive_responses_for_na = confirmed_candidates(audit, "test_drive_response")
@@ -282,9 +344,13 @@ def validate(job: dict, audit: dict) -> dict:
             "scheduled" in item.get("review_signals", {}).get("trial", [])
             for item in drive_responses_for_na
         )
-        if not na_candidates and distinct_invitation_count(drive_invites) < 2 and not scheduled_next_drive:
+        no_in_scope_e3 = (job.get("workflow_policy_version")==feedback.VERSION and na==2
+                          and row_value(job,"E3")=="NA" and feedback.scan_completed(audit)
+                          and audit.get("e3_consultation",{}).get("status")=="no_in_scope_consultation"
+                          and bool(audit.get("e3_consultation",{}).get("rationale")))
+        if not na_candidates and distinct_invitation_count(drive_invites) < 2 and not scheduled_next_drive and not no_in_scope_e3:
             errors.append("NA requires confirmed refusal/NA evidence or two confirmed test-drive invitations")
-    if bonus > 0:
+    if bonus > 0 and not service.active(job):
         bonus_candidates = confirmed_candidates(audit, "bonus_wet_tissue") + confirmed_candidates(audit, "bonus_starbucks")
         if len(bonus_candidates) * 3 < bonus:
             errors.append("bonus exceeds confirmed wet-tissue/Starbucks evidence")
@@ -301,7 +367,22 @@ def validate(job: dict, audit: dict) -> dict:
     d2_d9_value = row_value(job, "D2-D9")
     distinct_drive_invites = distinct_invitation_count(drive_invites)
     timeline = audit.get("trial_review", {}).get("timeline", {})
-    actual_drive_confirmed = bool(drive_actual) or timeline.get("actual_drive_chain") is True
+    semantic_drive_adopted = validate_semantic_trial(job, audit, errors)
+    actual_drive_directly_confirmed = bool(drive_actual) or (timeline.get("actual_drive_chain") is True and not is_inferred(timeline))
+    if semantic_trial(job):
+        actual_drive_directly_confirmed = False
+    matched_trial_adopted=feedback.validate_matched_trial(job,audit,errors)
+    actual_drive_confirmed = matched_trial_adopted or actual_drive_directly_confirmed or semantic_drive_adopted
+    if itemwise_required and actual_drive_confirmed and seen.get("D") == (25, 0):
+        errors.append("Confirmed trial must score D1-D9 individually; whole-D zero is disallowed")
+    if semantic_drive_adopted:
+        warnings.append("D trial completion is semantic inference, not direct audio confirmation")
+        if d2_d9_value == 15:
+            evidence_text = next((str(r[6]) for r in job.get("rows", []) if len(r) >= 7 and r[1] == "D2-D9"), "")
+            if not any(marker in evidence_text for marker in ("语义", "默认")):
+                errors.append("Semantic D scoring row must identify inference/default policy")
+        if d2_d9_value != 15 and d1_value != "NA":
+            errors.append("Semantic trial completion requires the fixed D2-D9=15 score; D1 NA cascade takes precedence")
     # User rule updated 2026-09-15: D1 NA always makes the full drive module NA.
     d1_na_cascade = d1_value == "NA"
     if d1_na_cascade and d2_d9_value != "NA":
@@ -312,11 +393,12 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("D1=NA requires full D module NA25 with applicable max/score 0/0")
     if d1_value == 5 and not actual_drive_confirmed and distinct_drive_invites < 2:
         errors.append("D1=5 without actual test drive requires two confirmed effective invitations")
-    if d1_value == 5 and actual_drive_confirmed and not drive_invites:
+    if d1_value == 5 and actual_drive_confirmed and not drive_invites and not matched_trial_adopted:
         errors.append("D1=5 requires confirmed invitation evidence")
-    if d1_value == 0 and actual_drive_confirmed:
+    safety_veto = validated_matched_safety_veto(job, audit)
+    if d1_value == 0 and actual_drive_confirmed and not safety_veto:
         errors.append("D1=0 conflicts with confirmed actual test-drive evidence; verify invitation or customer-initiated NA")
-    if d2_d9_value == 0 and actual_drive_confirmed:
+    if d2_d9_value == 0 and actual_drive_confirmed and not safety_veto:
         errors.append("D2-D9=0 conflicts with confirmed actual test-drive evidence")
     if d2_d9_value in {15, 20} and not actual_drive_confirmed:
         errors.append("D2-D9 test-drive score requires confirmed actual test drive evidence")
@@ -350,6 +432,9 @@ def validate(job: dict, audit: dict) -> dict:
     if h_triggered and not confirmed_candidates(audit, "h_veto"):
         errors.append("H veto requires confirmed H evidence")
 
+    service.validate(job,audit,errors)
+    feedback.validate_workflow(job,audit,errors)
+    errors.extend(validate_starbucks_introduction(job, audit))
     validate_rows(job, errors)
     return {
         "rule_version": job_version,
@@ -359,6 +444,7 @@ def validate(job: dict, audit: dict) -> dict:
         "negative_incentive": expected_negative,
         "errors": errors,
         "warnings": warnings,
+        "trial_completion_basis": "semantic_inference" if semantic_drive_adopted else "direct_evidence_policy",
     }
 
 
@@ -382,3 +468,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+

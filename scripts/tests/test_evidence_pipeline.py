@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import tempfile
 import importlib.util
 import sys
 import unittest
@@ -214,6 +217,14 @@ class DeterministicScoreValidationTests(unittest.TestCase):
                 "windows": [{"start": "00:00", "end": "15:00", "status": "confirmed"}],
                 "timeline": {"events": [], "actual_drive_chain": False},
             },
+        }
+
+        self.job['report_date'] = '2026-10-06'
+        self.job['starbucks_introduction'] = {'status':'未介绍','evidence':'00:00-16:20全录音及饮品窗口未确认品牌介绍'}
+        self.audit['starbucks_introduction'] = {
+            'status':'未介绍','full_transcript_scanned':True,'reviewed_at':'2026-10-06T11:00:00+08:00',
+            'rationale':'全量扫描及原饮品窗口没有明确品牌介绍','introduced_to_customer':False,
+            'reviews':[{'window':'02:00-02:20','channel':'mix','model':'large-v3-turbo','conclusion':'泛饮品介绍'}]
         }
 
     def valid_job_and_audit(self):
@@ -514,5 +525,52 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         self.assertTrue(any("actual test drive" in error for error in result["errors"]))
 
 
+class MatchedSafetyVetoTests(unittest.TestCase):
+    def test_independent_safety_audit_requires_matching_hash_and_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "job.json"
+            source = {
+                "independent_scoring_complete": True,
+                "D_safety_veto": True,
+                "rows": [["D", f"D{i}", "", 0, 0] for i in range(1, 10)],
+            }
+            source_path.write_text(json.dumps(source), encoding="utf-8")
+            (root / "evidence-audit.json").write_text(json.dumps({
+                "candidates": [{"id": "E036", "category": "trial_safety", "fact_status": "confirmed"}]
+            }), encoding="utf-8")
+            (root / "source-manifest.json").write_text(json.dumps({"sha256": "trial-hash"}), encoding="utf-8")
+            (root / "source-validation.json").write_text(json.dumps({"valid": True}), encoding="utf-8")
+            source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest().upper()
+            match = {
+                "status": "confirmed", "source_job": str(source_path),
+                "receipt_sha256": "receipt-hash", "trial_sha256": "trial-hash",
+                "evidence": ["independent identity match"],
+            }
+            job = {"D_safety_veto": True, "trial_match": match}
+            audit = {
+                "trial_match": copy.deepcopy(match),
+                "full_D_policy": {
+                    "mode": "matched_trial_safety_veto", "source_job": str(source_path),
+                    "source_job_sha256": source_hash,
+                    "receipt_sha256": "receipt-hash", "trial_sha256": "trial-hash",
+                },
+                "trial_safety_adjudication": {
+                    "status": "confirmed_D_safety_veto", "trial_job_ref": str(source_path),
+                    "trial_job_sha256": source_hash, "trial_candidate_id": "E036",
+                },
+            }
+            self.assertTrue(validator.validated_matched_safety_veto(job, audit))
+            itemwise_job = copy.deepcopy(job)
+            itemwise_job["trial_safety_policy_version"] = validator.TRIAL_ITEMWISE_VERSION
+            self.assertFalse(validator.validated_matched_safety_veto(itemwise_job, audit))
+            wrong_candidate = copy.deepcopy(audit)
+            wrong_candidate["trial_safety_adjudication"]["trial_candidate_id"] = "missing"
+            self.assertFalse(validator.validated_matched_safety_veto(job, wrong_candidate))
+            wrong_hash = copy.deepcopy(audit)
+            wrong_hash["full_D_policy"]["source_job_sha256"] = "0" * 64
+            self.assertFalse(validator.validated_matched_safety_veto(job, wrong_hash))
+
 if __name__ == "__main__":
     unittest.main()
+

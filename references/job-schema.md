@@ -1,5 +1,7 @@
 # 报告输入格式
 
+2026-10-10起新评分及本次五单复核，另必填[服务补充合同](service-scoring-policy.md)：service_policy_version、逐行row_assessments、e2_missing_components、三种星巴克服务状态；NA原因见[矩阵](na-decision-matrix.md)。B8coffee改为介绍加分；C5bonus/D8bonus是独立0/2加分行，不计基础满分和NA。
+
 `render_report.py`读取UTF-8 JSON。核心字段：
 
 ```json
@@ -157,3 +159,42 @@ r2及r3新任务中，E2得3分还必须填写`quote_confirmation`：销售已�
 新证据流程只用于后续新录音；历史评分仅在用户明确要求复核时创建新版本，不自动覆盖或重发旧PNG。
 
 r3新任务的job与evidence-audit.json均须包含`price_policy_version: "HB-2026-09-17"`；实际价格和权益逐项匹配9月17日更新及完整9月基线。旧r1/r2只用于历史兼容，不为其补造当期政策版本。D1为NA时，D2-D9同为NA，D模块填`["D试驾", 0, 0]`，试驾贡献NA25且基础分不增加；审计保留D1的独立NA依据。
+
+已完成试驾的新评分和经明确复核的历史修订，job/audit同填`trial_safety_policy_version: "trial-itemwise-2026-10-12-v1"`。确认安全事件仍在审计记录原音复核时间窗、声道、模型及事实界限；`D_safety_veto`不得为true，不能用安全事件将D1—D9全置0。独立试驾源的`D_score`等于九个基础D行实得之和，合并接待用`trial_score_reuse`记录来源哈希与逐项采用结果。旧整D0源须重新逐项裁决并以新版本报告发布，保留旧PNG；H整单否决另行审查。
+
+## 星巴克介绍报告合同（2026-10-05起）
+2026-10-05及以后每条结果必填 `report_date` 和下列独立报告字段；历史日期不自动补算。计算规则版本保持r3，此变更只增加展示和证据字段。
+```json
+"starbucks_introduction": {
+  "status": "已介绍",
+  "evidence": "23:15-23:21，销售向客户说明送上的是本店星巴克咖啡。"
+}
+```
+`status`只允许已介绍/未介绍/待核实。未介绍必须在PNG显著红色显示“警告：未介绍（录音未核验到明确介绍）”，`evidence`记录全录音复核范围及相关窗口；待核实使用橙色，不能伪称没有。缺字段时校验和渲染均报错，不默认判否。独立卡片放在得分卡之后。
+审计同名对象必须包含 `status`、`full_transcript_scanned: true`、`reviewed_at`、`rationale`、`introduced_to_customer`（true/false/null）及非空 `reviews`（每项含 `window`、`channel`、`model`、`conclusion`）。已介绍还须存在已确认的 `starbucks_introduction` 候选及 `introduced_to_customer: true`。未介绍不得与阳性候选冲突。
+旧版仅管理提示的合同保留历史兼容；采用service-policy-2026-10-10-v1时，介绍行为按B8coffee给0/3，不再使用实际饮用门槛，三种行为分别记录。已发布报告只有明确范围内的新版本才补加，不覆盖原PNG。
+
+
+## 固定流程输入与裁决记录
+
+自2026-10-05起，本地通用CLI从rows重算模块、base、NA、bonus和整数总分；每个模块必须包含完整标准小项，NA必须显式记录，不能因遗漏一行而自动产生NA。A3、B8及恢复的C5bonus/D8bonus加分行独立于基础分。每单只写结构化JSON数据，不临时生成携带客户结论的Python脚本。
+
+新裁决可同时使用 `review_status: complete` 与 `fact_status: confirmed/rejected/unresolved`。rejected候选保留original_category、原始比较、原因，并归为reviewed_context；其legacy status=confirmed仅为旧校验接口的复核完成标志，不表示原行为成立。未完成必要复核或缺少待核闭环的unresolved继续阻止最终发布；按workflow-optimization完成两轮收口且记录review_closed、closure_reason、qualifies_for_scoring=false、affected_rows及job.pending_evidence的候选，可保持unresolved按合同发布，受影响得分/加分为0，不得据此NA、触发H或价格处罚。任何候选都必须有逐项decision，不允许统一写confirmed。固定CLI validation.json保存input_fingerprint和validated_at，相同内容只校验一次，变化则失效。
+
+## 试驾语义裁决合同
+后续本地D语义判断须在job与audit保存完全相同的trial_assessment对象，schema_version=semantic-trial-v1、policy_version=trial-semantic-2026-10-06-v1，字段与计分/报告约束见[trial-semantic-policy.md](trial-semantic-policy.md)。复核完成与fact_status=inferred分别记录；不得把推断候选赋为事实confirmed、不能改成test_drive_actual，也不能设置直接证实的actual_drive_chain=true。已发布10月5日三份显式用户授权的旧字段只读兼容，不修改其历史job和PNG。
+含混的星巴克介绍标橙、不得获得星巴克加分；按服务补充完成待核闭环后可发布，不能据此认定实际饮用。
+
+## 价格考核范围记录（2026年10月9日起）
+
+后续评分的job与审计均记录 `price_scope_policy_version: "price-scope-2026-10-09-v4"`，在审计price_adjudication中区分范围内金额核对与排除事项，不把排除解释成事实已确认合规。price_policy_version仍为实际采用的自律会表版本。
+
+`compliance`只列自律会标准范围内价格、赠品及金融政策问题；专业知识、全部补贴/置换政策及标准未规定的税险政策/金额不得列入违规、风险或待核实。明细C6/E2/E3/H、improvements及其他分项不得以排除事项的真实性或办理细节作为扣分/建议依据；范围外候选仅记reviewed_context，不建立未决计分事实，也不写成已核实合规。其他服务行为继续按原规则取证和评分，E2报价组成与E3可考核咨询场景按scoring-rules.md执行。
+
+每张后续PNG的defaults注明：“合规仅按自律会标准检查价格、赠品及金融政策；专业知识、补贴及置换政策不核查，标准未规定的税险政策/金额不考核。”用户另行指定历史复核时才更新历史数据和新版本PNG。
+
+## 反馈流程合同（2026年10月9日起）
+
+新本地job/audit同填workflow_policy_version=workflow-feedback-2026-10-09-v1、price_scope_policy_version=price-scope-2026-10-09-v4。报告默认说明包含合规仅价格/赠品/金融及专业/补贴/置换/表外税险排除。compliance每项domain为price/gift/finance且standard_ref引用自律会表条款；不列范围外事项。允许competitors=[]，展示为未核到客户实际关注竞品。完整rows留存，PNG扣分明细由实得<满分且非NA的rows派生。
+
+全量语义筛选semantic_scan、闭环pending_evidence、context_groups、六要素显式quote_components及component_sources、trial_score_reuse、试驾matching/卫生投诉/新D5时长字段均按workflow-optimization.md。闭环待核保留unresolved，不得将其status统一confirmed；E2=3六项均有已复核候选原音来源。旧合同历史只读兼容，不自动重算或改写旧PNG。

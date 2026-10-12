@@ -7,6 +7,10 @@ import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from starbucks_review import validate_fields as validate_starbucks_fields
+from trial_assessment import report_lines as trial_report_lines
+from feedback_policy import VERSION as WORKFLOW_VERSION
+from service_policy import deduction_details,module_segments,active as service_active,VERSION as SERVICE_VERSION
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -16,6 +20,7 @@ NAVY = "#123A70"
 TEAL = "#117C88"
 GREEN = "#15966B"
 ORANGE = "#D8792C"
+DEFAULT_YELLOW = "#EDC348"
 RED = "#D95454"
 BLUE = "#2D68A2"
 TEXT = "#263248"
@@ -117,6 +122,9 @@ def normalized_model(value):
 
 
 def validate_review_fields(job):
+    starbucks_errors = validate_starbucks_fields(job)
+    if starbucks_errors:
+        raise ValueError("; ".join(starbucks_errors))
     models = job.get("models_of_interest")
     if not isinstance(models, dict):
         raise ValueError("models_of_interest必须是对象")
@@ -124,7 +132,7 @@ def validate_review_fields(job):
     require_text(models, "evidence", "models_of_interest.evidence")
     for key in ("own_brand", "competitors"):
         value = models.get(key)
-        if not isinstance(value, list) or not value or any(not str(item).strip() for item in value):
+        if not isinstance(value, list) or (key=="own_brand" and not value) or any(not str(item).strip() for item in value):
             raise ValueError(f"models_of_interest.{key}必须是非空列表")
 
     intention = job.get("intention")
@@ -151,16 +159,30 @@ def validate_review_fields(job):
         "元up", "第三代元plus", "汉ev闪充版", "大唐ev",
     )
     own_models = [normalized_model(item) for item in models["own_brand"]]
-    # 2027款元UP飞驰版自HB-2026-09-17起明确为一般车型；
-    # 旧元UP智驾版仍保留既有严管覆盖。
-    detected = any(
-        token in item
-        for item in own_models
-        if "2027款元up飞驰版" not in item
-        for token in strict_tokens
-    )
+    # 2027款元UP飞驰版为一般车型，旧智驾版仍严管。
+    # 版本未明不能由车系关键词强迫成已确认严管，也不能判为否。
+    detected = False
+    unresolved_yuanup = False
+    for item in own_models:
+        if any(token in item for token in strict_tokens if token != "元up"):
+            detected = True
+        if "元up" not in item:
+            continue
+        flying_2027 = "2027" in item and "飞驰" in item
+        version_unknown = any(marker in item for marker in (
+            "版本未明", "版本不明", "版本待核", "版本未确认", "年款未明", "年款待核",
+        )) or ("智驾" not in item and not flying_2027)
+        if version_unknown:
+            unresolved_yuanup = True
+        elif not flying_2027:
+            detected = True
     if detected and status != "是":
         raise ValueError("本品关注车型命中严管车系，strict_control.status必须为是")
+    if unresolved_yuanup and status == "否":
+        raise ValueError("元UP版本未明，strict_control.status须为待核实或是")
+    if unresolved_yuanup and status == "待核实":
+        for key in ("series", "trim", "filed_price", "policy_basis"):
+            require_text(strict, key, f"strict_control.{key}")
 
     compliance = job.get("compliance")
     if not isinstance(compliance, list):
@@ -186,7 +208,7 @@ def render_png(job, target, score, raw, penalty):
     intention = job["intention"]
     strict = job["strict_control"]
     own_models = "、".join(str(item) for item in models["own_brand"])
-    competitors = "、".join(str(item) for item in models["competitors"])
+    competitors = "、".join(str(item) for item in models["competitors"]) or "未核到客户实际关注的竞品"
     strict_summary = f"{strict['status']}"
     if strict["status"] == "是":
         strict_summary += (
@@ -218,7 +240,7 @@ def render_png(job, target, score, raw, penalty):
 
     static_lines = wrap(measure, job.get("static", "未提供"), make_font(22), inner - 90)
     deduction_rows = []
-    for item in job.get("deductions", []):
+    for item in deduction_details(job):
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             title, reason = item[0], item[1]
         else:
@@ -227,7 +249,23 @@ def render_png(job, target, score, raw, penalty):
         deduction_rows.append((str(title), reason_lines or [""]))
     highlight_rows = [wrap(measure, item, make_font(21), inner - 110) for item in as_list(job.get("highlights"))]
     improvement_rows = [wrap(measure, item, make_font(21), inner - 110) for item in as_list(job.get("improvements"))]
-    default_rows = [wrap(measure, item, make_font(20), inner - 90) for item in as_list(job.get("defaults"))]
+    default_values = as_list(job.get("defaults")) + trial_report_lines(job)
+    default_rows = [wrap(measure, item, make_font(21), inner - 110) for item in default_values]
+
+    starbucks = job.get("starbucks_introduction")
+    starbucks_text = starbucks["evidence"] if starbucks else ""
+    if starbucks and service_active(job):
+        status_names = {"confirmed":"已确认", "not_confirmed":"未确认", "pending":"待核实"}
+        service = job.get("starbucks_service", {})
+        for key, label in (("provided","实际提供"),("consumed","实际饮用")):
+            item=service.get(key,{})
+            starbucks_text += "\n"+label+"："+status_names.get(item.get("status"),"待核实")+"｜"+str(item.get("evidence",""))
+    starbucks_lines = wrap(measure, starbucks_text, make_font(21), inner - 100) if starbucks else []
+    starbucks_height = 152 + len(starbucks_lines) * 28 if starbucks else 0
+    starbucks_space = starbucks_height + 38 if starbucks else 0
+    trial_lines = [line for item in trial_report_lines(job) for line in wrap(measure, item, make_font(21), inner - 100)]
+    trial_height = 100 + 28 * len(trial_lines) if trial_lines else 0
+    trial_space = trial_height + 38 if trial_lines else 0
 
     overview_height = 82 + sum(max(36, len(lines) * 28) for lines in overview_rows) + 28
     compliance_height = 82 + sum(
@@ -247,15 +285,17 @@ def render_png(job, target, score, raw, penalty):
     improvement_height = 82 + sum(max(39, len(lines) * 28) for lines in improvement_rows) + 25
     if not improvement_rows:
         improvement_height = 145
-    defaults_height = 82 + sum(max(34, len(lines) * 27) for lines in default_rows) + 30
+    defaults_height = 82 + sum(max(39, len(lines) * 28) for lines in default_rows) + 30
     if not default_rows:
         defaults_height = 145
 
+    header_lines=wrap(measure, f"销售：{job.get('sales','待核实')}    客户：{job.get('customer','待核实')}    车型：{job.get('car','待核实')}    录音：{job.get('duration','待核实')}",make_font(23),inner)
+    header_height=max(285,207+len(header_lines)*32+35)
     total_height = (
-        285 + 35 + 255 + 55 + overview_height + 38 + compliance_height + 38
+        header_height + 35 + 255 + 55 + overview_height + 38 + compliance_height + 38
         + module_height + 38 + static_height + 38
         + deduction_height + 38 + highlight_height + 38 + improvement_height
-        + 38 + defaults_height + 115
+        + 38 + defaults_height + 115 + starbucks_space + trial_space
     )
     image = Image.new("RGB", (width, total_height), BG)
     draw = ImageDraw.Draw(image)
@@ -284,20 +324,21 @@ def render_png(job, target, score, raw, penalty):
         return y
 
     # Header
-    draw.rectangle((0, 0, width, 285), fill=NAVY)
+    draw.rectangle((0, 0, width, header_height), fill=NAVY)
     text(margin, 45, "王朝网销售服务品质 6.0-G", 38, WHITE, True)
     text(margin, 108, "暗访录音评分报告", 58, WHITE, True)
     meta = (
         f"销售：{job.get('sales', '待核实')}    客户：{job.get('customer', '待核实')}    "
         f"车型：{job.get('car', '待核实')}    录音：{job.get('duration', '待核实')}"
     )
-    text(margin, 207, meta, 23, "#D8E8FF")
+    for index,line in enumerate(header_lines):
+        text(margin,207+index*32,line,23,"#D8E8FF")
     if job.get("report_date"):
         text(width - margin, 64, f"报告日期  {job['report_date']}", 21, "#D8E8FF", False, "ra")
     if job.get("rule_version"):
         text(width - margin, 102, f"规则版本  {job['rule_version']}", 18, "#B9D3F4", False, "ra")
 
-    y = 320
+    y = header_height + 35
     # Result and composition cards
     card((margin, y, 590, y + 255), "#EAF8F2", "#B9E5D3")
     text(margin + 42, y + 31, "最终得分", 27, GREEN, True)
@@ -323,6 +364,24 @@ def render_png(job, target, score, raw, penalty):
     text(665, y + 218, "最终分按封顶后的折算结果向下取整", 19, MUTED)
 
     y += 310
+    if starbucks:
+        status = starbucks["status"]
+        color = GREEN if status == "已介绍" else RED if status == "未介绍" else ORANGE
+        fill = "#F2FBF7" if status == "已介绍" else "#FFF1F1" if status == "未介绍" else "#FFF8EA"
+        card((margin, y, width - margin, y + starbucks_height), fill, color, line_width=3)
+        text(margin + 40, y + 22, "星巴克介绍专项｜是否向客户介绍本店星巴克", 27, NAVY, True)
+        label = "已介绍" if status == "已介绍" else "警告：未介绍（录音未核验到明确介绍）" if status == "未介绍" else "待核实：介绍证据含混"
+        text(margin + 40, y + 66, label, 30, color, True)
+        for index, line in enumerate(starbucks_lines):
+            text(margin + 40, y + 111 + index * 28, line, 21, TEXT)
+        text(margin + 40, y + starbucks_height - 31, "明确介绍星巴克可加3分；提供与饮用分别记录，不重复加分。" if service_active(job) else "本项为独立提示；介绍、提供与实际饮用分别核验，不直接改变得分。", 18, MUTED)
+        y += starbucks_space
+    if trial_lines:
+        card((margin, y, width - margin, y + trial_height), "#FFF8EA", ORANGE, line_width=3)
+        text(margin + 40, y + 22, "D试驾口径｜语义推断", 27, NAVY, True)
+        for index, line in enumerate(trial_lines):
+            text(margin + 40, y + 68 + index * 28, line, 21, TEXT)
+        y += trial_space
     # Customer models, intention and strict-control overview
     content_y = section_title(y, "01", "关注车型、客户意向与严管状态", NAVY)
     card((margin, content_y, width - margin, content_y + overview_height - 72), "#F5F8FC", "#C7D5E5")
@@ -368,12 +427,19 @@ def render_png(job, target, score, raw, penalty):
         text(margin + 590, row_y, f"{got_value:g} / {maximum_value:g}", 22, NAVY, True)
         bar_left, bar_top, bar_right = margin + 780, row_y + 5, width - margin - 130
         draw.rounded_rectangle((bar_left, bar_top, bar_right, bar_top + 18), 9, fill="#DCE5EC")
+        segments = module_segments(job, str(name)[0], maximum_value, got_value)
         if ratio > 0:
             draw.rounded_rectangle((bar_left, bar_top, bar_left + (bar_right - bar_left) * ratio, bar_top + 18), 9, fill=TEAL)
+        if maximum_value > 0 and segments["default_deduction"] > 0:
+            yellow_left = bar_left + (bar_right - bar_left) * ratio
+            yellow_right = min(bar_right, yellow_left + (bar_right - bar_left) * segments["default_deduction"] / maximum_value)
+            draw.rectangle((yellow_left, bar_top, yellow_right, bar_top + 18), fill=DEFAULT_YELLOW)
         text(width - margin - 45, row_y - 3, f"{ratio * 100:.0f}%", 18, MUTED, False, "ra")
         row_y += 61
     draw.line((margin + 40, row_y + 4, width - margin - 40, row_y + 4), fill="#DFE6ED", width=2)
     text(margin + 42, row_y + 25, f"基础实得 {float(job['base']):g}  ·  NA {float(job.get('na', 0)):g}  ·  加分 {float(job.get('bonus', 0)):g}", 22, MUTED)
+    if service_active(job):
+        text(margin + 42, row_y + 60, "青色：实得分  ·  黄色：默认扣分  ·  灰色：其他未得分；黄色不计入得分", 18, MUTED)
     y = content_y + module_height - 72 + 38
 
     # Static explanation
@@ -390,10 +456,11 @@ def render_png(job, target, score, raw, penalty):
     card((margin, content_y, width - margin, content_y + deduction_height - 72), "#FFF7F7", "#F0C5C5")
     row_y = content_y + 30
     if not deduction_rows:
-        text(margin + 45, row_y, "无扣分项", 21, MUTED)
+        text(margin + 45, row_y, "无需列示的非默认扣分项" if service_active(job) else "无扣分项", 21, MUTED)
     for title, lines in deduction_rows:
         text(margin + 42, row_y + 2, "●", 17, RED)
-        text(margin + 78, row_y, title, 22, TEXT, True)
+        for index,line in enumerate(wrap(draw,title,make_font(22,True),205)):
+            text(margin + 78,row_y+index*26,line,22,TEXT,True)
         reason_x = margin + 78
         for index, line in enumerate(lines):
             text(reason_x, row_y + 35 + index * 27, line, 21, "#596578")
@@ -423,7 +490,8 @@ def render_png(job, target, score, raw, penalty):
     )
     text(margin, y + 4, formula, 21, MUTED)
     rule_version = job.get("rule_version", "6.0-G（历史任务）")
-    text(margin, y + 44, f"依据：{rule_version}及有效价格管控口径 · 逐项证据已汇总于本报告", 19, "#8792A3")
+    policy_label = " · " + SERVICE_VERSION if service_active(job) else ""
+    text(margin, y + 44, f"依据：{rule_version}{policy_label}及有效价格管控口径", 19, "#8792A3")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     image.save(target)
