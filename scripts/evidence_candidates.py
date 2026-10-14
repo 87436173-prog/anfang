@@ -13,7 +13,7 @@ from typing import Iterable
 
 
 RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
-PRICE_POLICY_VERSION = "HB-2026-09-17"
+PRICE_POLICY_VERSION = "HB-2026-10-13-DH-EV"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 HIGH_PRECISION_MODEL = r"C:\Users\no02\.cache\whisper\ggml-large-v3-turbo-q5_0.bin"
 FALLBACK_MODEL = r"C:\Users\no02\.cache\whisper\ggml-small.bin"

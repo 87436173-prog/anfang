@@ -7,7 +7,7 @@
 ```json
 {
   "rule_version": "6.0-G-HB-2026-09-14-r3",
-  "price_policy_version": "HB-2026-09-17",
+  "price_policy_version": "HB-2026-10-13-DH-EV",
   "slug": "20260813_sales_customer_car",
   "sales": "销售姓名",
   "customer": "客户称谓",
@@ -158,7 +158,7 @@ r2及r3新任务中，E2得3分还必须填写`quote_confirmation`：销售已�
 
 新证据流程只用于后续新录音；历史评分仅在用户明确要求复核时创建新版本，不自动覆盖或重发旧PNG。
 
-r3新任务的job与evidence-audit.json均须包含`price_policy_version: "HB-2026-09-17"`；实际价格和权益逐项匹配9月17日更新及完整9月基线。旧r1/r2只用于历史兼容，不为其补造当期政策版本。D1为NA时，D2-D9同为NA，D模块填`["D试驾", 0, 0]`，试驾贡献NA25且基础分不增加；审计保留D1的独立NA依据。
+r3新任务的job与evidence-audit.json均须包含`price_policy_version: "HB-2026-10-13-DH-EV"`；实际价格和权益逐项匹配大汉EV增量、9月17日更新及完整9月基线。旧r1/r2只用于历史兼容，不为其补造当期政策版本。D1为NA时，D2-D9同为NA，D模块填`["D试驾", 0, 0]`，试驾贡献NA25且基础分不增加；审计保留D1的独立NA依据。
 
 已完成试驾的新评分和经明确复核的历史修订，job/audit同填`trial_safety_policy_version: "trial-itemwise-2026-10-12-v1"`。确认安全事件仍在审计记录原音复核时间窗、声道、模型及事实界限；`D_safety_veto`不得为true，不能用安全事件将D1—D9全置0。独立试驾源的`D_score`等于九个基础D行实得之和，合并接待用`trial_score_reuse`记录来源哈希与逐项采用结果。旧整D0源须重新逐项裁决并以新版本报告发布，保留旧PNG；H整单否决另行审查。
 

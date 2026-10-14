@@ -156,7 +156,7 @@ def validate_review_fields(job):
 
     strict_tokens = (
         "秦maxdmi", "秦maxev", "宋prodmi飞驰版", "宋ultraev", "宋ultradmi",
-        "元up", "第三代元plus", "汉ev闪充版", "大唐ev",
+        "元up", "第三代元plus", "汉ev闪充版", "大汉ev", "大唐ev",
     )
     own_models = [normalized_model(item) for item in models["own_brand"]]
     # 2027款元UP飞驰版为一般车型，旧智驾版仍严管。

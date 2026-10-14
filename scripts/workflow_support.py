@@ -5,7 +5,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 RUNTIME=Path(r'C:/Users/no02/Documents/Codex/byd-scoring-runtime')
-RULE='6.0-G-HB-2026-09-14-r3'; PRICE='HB-2026-09-17'
+RULE='6.0-G-HB-2026-09-14-r3'; PRICE='HB-2026-10-13-DH-EV'
 CST=timezone(timedelta(hours=8))
 def now(): return datetime.now(CST).isoformat()
 def read(path): return json.loads(Path(path).read_text(encoding='utf-8-sig'))
@@ -47,7 +47,7 @@ def import_source(audio,job_dir,day,probe=None,hash_file=sha):
  if probe is None:
   probe=json.loads(subprocess.check_output([config()['ffprobe'],'-v','error','-show_entries','stream=codec_type,sample_rate,channels:format=duration','-of','json',str(p)],text=True,encoding='utf-8'))
  stream=next(x for x in probe['streams'] if x.get('codec_type')=='audio')
- value={'source':str(p),'sha256':hash_file(p),'sample_rate':int(stream['sample_rate']),'channels':int(stream['channels']),'duration_seconds':float(probe['format']['duration']),'file_identity':identity,'task_date':day,'rule_version':RULE,'price_policy_version':PRICE,'result_mode':'local_codex_test','imported_at':now(),'price_policy_extension':'用户明确：没有新的价格政策时，旧的默认延续'}
+ value={'source':str(p),'sha256':hash_file(p),'sample_rate':int(stream['sample_rate']),'channels':int(stream['channels']),'duration_seconds':float(probe['format']['duration']),'file_identity':identity,'task_date':day,'rule_version':RULE,'price_policy_version':PRICE,'result_mode':'local_codex_test','imported_at':now(),'price_policy_extension':'大汉EV按2026-10-13增量；其他车型沿用2026-09-17已确认口径'}
  save(m,value);return value,False
 
 def rule_snapshot(directory,acknowledge=False):

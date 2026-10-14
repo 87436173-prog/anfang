@@ -14,7 +14,8 @@ import service_policy as service
 
 
 RULE_VERSION = "6.0-G-HB-2026-09-14-r3"
-PRICE_POLICY_VERSION = "HB-2026-09-17"
+PRICE_POLICY_VERSION = "HB-2026-10-13-DH-EV"
+PREVIOUS_PRICE_POLICY_VERSION = "HB-2026-09-17"
 TRIAL_ITEMWISE_VERSION = "trial-itemwise-2026-10-12-v1"
 TRANSCRIPTION_AUDIT_SCHEMA = "byd-transcription-pipeline-v2"
 LEGACY_RULE_VERSIONS = {"6.0-G-HB-2026-08-27-r1", "6.0-G-HB-2026-08-27-r2"}
@@ -256,10 +257,13 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("audit.rule_version must match job.rule_version")
 
     if job_version == RULE_VERSION:
-        if job.get("price_policy_version") != PRICE_POLICY_VERSION:
-            errors.append("Current job requires price_policy_version=" + PRICE_POLICY_VERSION)
-        if audit.get("price_policy_version") != PRICE_POLICY_VERSION:
-            errors.append("Current audit requires price_policy_version=" + PRICE_POLICY_VERSION)
+        report_date = str(job.get("report_date", ""))
+        expected_price_policy = (PREVIOUS_PRICE_POLICY_VERSION if report_date and report_date < "2026-10-14"
+                                 else PRICE_POLICY_VERSION)
+        if job.get("price_policy_version") != expected_price_policy:
+            errors.append("Current job requires price_policy_version=" + expected_price_policy)
+        if audit.get("price_policy_version") != expected_price_policy:
+            errors.append("Current audit requires price_policy_version=" + expected_price_policy)
     itemwise_required = (str(job.get("report_date", "")) >= "2026-10-12"
                          or job.get("trial_safety_policy_version") is not None
                          or audit.get("trial_safety_policy_version") is not None)

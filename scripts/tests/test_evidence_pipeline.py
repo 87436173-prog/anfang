@@ -182,12 +182,17 @@ class PricePolicyRegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             renderer.validate_review_fields(self.review_job("元UP智驾版 401KM活力型", "否"))
 
+    def test_dahan_ev_requires_strict_control(self):
+        with self.assertRaises(ValueError):
+            renderer.validate_review_fields(self.review_job("大汉EV 1008KM后驱激光雷达尊享型", "否"))
+        renderer.validate_review_fields(self.review_job("大汉EV 1008KM后驱激光雷达尊享型", "是"))
+
 
 class DeterministicScoreValidationTests(unittest.TestCase):
     def setUp(self):
         self.job = {
             "rule_version": validator.RULE_VERSION,
-            "price_policy_version": validator.PRICE_POLICY_VERSION,
+            "price_policy_version": validator.PREVIOUS_PRICE_POLICY_VERSION,
             "models_of_interest": {"evidence": "00:30确认宋Pro飞驰版"},
             "intention": {"level": "C", "evidence": "16:20表示继续考虑"},
             "strict_control": {"status": "是", "series": "宋Pro DM-i飞驰版", "filed_price": "99900元"},
@@ -203,7 +208,7 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         coverage = {category: {"status": "scanned_no_candidates", "candidate_count": 0} for category in validator.REQUIRED_COVERAGE}
         self.audit = {
             "rule_version": validator.RULE_VERSION,
-            "price_policy_version": validator.PRICE_POLICY_VERSION,
+            "price_policy_version": validator.PREVIOUS_PRICE_POLICY_VERSION,
             "coverage": coverage,
             "derived": {"quote_completeness": {"complete": False, "components": {}}},
             "candidates": [
@@ -267,7 +272,10 @@ class DeterministicScoreValidationTests(unittest.TestCase):
     def test_latest_policy_required_for_new_jobs_and_audits(self):
         for target in ("job", "audit"):
             job, audit = self.valid_job_and_audit()
-            (job if target == "job" else audit)["price_policy_version"] = "HB-2026-08-14"
+            job["report_date"] = "2026-10-14"
+            job["price_policy_version"] = validator.PRICE_POLICY_VERSION
+            audit["price_policy_version"] = validator.PRICE_POLICY_VERSION
+            (job if target == "job" else audit)["price_policy_version"] = validator.PREVIOUS_PRICE_POLICY_VERSION
             result = validator.validate(job, audit)
             self.assertFalse(result["valid"])
             self.assertTrue(any("price_policy_version" in e for e in result["errors"]))
