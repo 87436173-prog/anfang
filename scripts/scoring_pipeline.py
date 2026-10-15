@@ -130,7 +130,7 @@ def raw_audit(j,results,supplements=None):
   source=w.read(j/'source-manifest.json')['sha256']
   for label,x in expected.items():
    r=indexed[label]
-   if x.get('source_sha256')!=source or r.get('source_sha256')!=source or any(r.get(k)!=x.get(k) for k in ('channel','start','end')):
+   if x.get('source_sha256',source)!=source or r.get('source_sha256')!=source or any(r.get(k)!=x.get(k) for k in ('channel','start','end')):
     raise ValueError('Selected review window source/channel/time mismatch: '+label)
   reviews=[indexed[label] for label in expected]
  source=w.read(j/'source-manifest.json')['sha256'] if (j/'source-manifest.json').exists() else None

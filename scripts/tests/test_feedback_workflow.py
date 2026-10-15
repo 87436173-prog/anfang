@@ -72,6 +72,9 @@ class FeedbackRegressionTests(unittest.TestCase):
             results=j/"review/results_selected-windows_turbo.json";w.save(results,[result])
             pipeline.raw_audit(j,results)
             self.assertEqual(len(w.read(j/"review/evidence-audit.raw.json")["quality_review_results"]),1)
+            w.save(j/"review/selected-windows.json",[{k:v for k,v in selected[0].items() if k!="source_sha256"}])
+            pipeline.raw_audit(j,results)  # Historical selected manifests lacked an embedded hash.
+            w.save(j/"review/selected-windows.json",selected)
             w.save(results,[])
             with self.assertRaisesRegex(ValueError,"B3_mix"):pipeline.raw_audit(j,results)
             w.save(results,[{**result,"channel":"left"}])
