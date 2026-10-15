@@ -59,7 +59,7 @@ E2为0时，报告逐一列出确实未确认的要素，不使用“赠品、�
 
 ## 结构化合同
 
-job/audit同填service_policy_version与row_assessments。每个基础行记录kind=evidence/audio_default/na、rationale。默认扣分附default_deduction_points与policy_rule；NA附policy_rule、conditions和evidence_ids。E3无咨询附完整语义扫描哈希及原音上下文复核索引。job.e2_missing_components从已确认候选的六要素来源确定，禁止手写笼统缺项。
+job/audit同填service_policy_version与row_assessments。每个基础行记录kind=evidence/audio_default/na、rationale。默认扣分附default_deduction_points与policy_rule；NA附policy_rule、conditions和evidence_ids。B3先分别记录自我介绍、询问称谓、礼貌沟通的时间窗与声道，再按整项0/3填值；只有三项均确认才填3，不得填1/2。E3无咨询附完整语义扫描哈希及原音上下文复核索引。job.e2_missing_components从已确认候选的六要素来源确定，禁止手写笼统缺项。
 
 job/audit同时记录starbucks_service.introduction/provided/consumed，每项status=confirmed/not_confirmed/pending及evidence。旧SB管理字段继续兼容。B8和B8coffee分别为湿纸巾和星巴克介绍，均0/3，不可NA。C5bonus/D8bonus各0/2，不可NA；须有对应基础满分和独立超额证据，不能以一份泛化亮点摘要代替三项条件。F2仅电话NA须在row_assessments独立记录具体条件及联系方式证据。
 

@@ -184,13 +184,16 @@ def merge_trial(job_dir,trial_job_dir,matching):
     return {"D_score":sum(r[4] for r in adopted if r[4]!="NA"),"source_job":value["source_job"],"final_score":job["final_score"]}
 
 def quote_sources(candidates,quote):
-    sources={}
+    from service_policy import E2_COMPONENTS, confirmed_source
+    sources={};hints={}
     for c in candidates:
-        if c.get("status")!="confirmed" or c.get("fact_status") in {"rejected","unresolved","inferred"}:
-            continue
         for key,value in c.get("review_signals",{}).get("quote_components",{}).items():
-            if value:sources.setdefault(key,[]).append(c["id"])
-    return {**quote,"component_sources":sources}
+            if not value or key not in E2_COMPONENTS:continue
+            if c.get('category') in {'price_policy','interior_color'} and confirmed_source(c):
+                sources.setdefault(key,[]).append(c['id'])
+            else:hints.setdefault(key,[]).append(c['id'])
+    components={key:bool(sources.get(key)) for key in E2_COMPONENTS}
+    return {**quote,"components":components,"complete":all(components.values()),"component_sources":sources,"component_hints":hints}
 
 def validate_windows(requests,manifest):
     if not isinstance(requests,list):

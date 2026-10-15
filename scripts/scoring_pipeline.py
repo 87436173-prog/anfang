@@ -52,6 +52,10 @@ def plan(j,selection=None):
  # Mandatory B3 per native original channel; mix may reuse the identical Turbo window.
  b3=[{'label':'B3_'+ch,'event_id':'B3_'+ch,'start':0,'end':min(180,m['duration_seconds']),'channel':ch} for ch in ((['left','right']+['ch'+str(i) for i in range(2,m['channels'])]+['mix']) if m['channels']>=2 else ['mix'])]
  w.save(j/'review/candidate-plan.json',candidates);w.save(j/'review/windows.json',windows);w.save(j/'review/b3-windows.json',b3)
+ if selection:
+  selected=[{**x,'source_sha256':m['sha256'],'selection_reason':'计分相关候选定向复核'} for x in windows]
+  selected.extend({**x,'source_sha256':m['sha256'],'selection_reason':'B3前三分钟原始声道强制复核'} for x in b3)
+  w.save(j/'review/selected-windows.json',selected)
  totals={'candidate_count':len(candidates),'union_windows':len(windows),'naive_window_seconds':sum((x['end_ticks']-x['start_ticks'])/100 for x in candidates),'union_window_seconds':sum(x['end']-x['start'] for x in windows),'mandatory_b3_channels':[x['channel'] for x in b3]}
  optional_statistics(j,lambda:ex.observation(m,j,'B2',{'result':'unmeasured','quality_verified':False,'seconds_saved':None,'plan':totals,'audit_ref':str(j/'review/candidate-plan.json')}) if ex.active(m['task_date']) else None)
  return totals
@@ -60,6 +64,7 @@ def review(j,manifest,model_name):
  # Runs sequentially on this CPU, reusing only successful identical windows in this reception.
  c=w.config();m=w.read(j/'source-manifest.json');model_path=c['review_model'] if model_name=='turbo' else c['adjudication_model']
  requests=w.read(manifest);f.validate_windows(requests,m)
+ if any(x.get('source_sha256',m['sha256'])!=m['sha256'] for x in requests):raise ValueError('Review manifest source SHA-256 mismatch')
  if (j/'workflow-policy.json').exists() and any(not x.get('event_id') for x in requests):raise ValueError('New workflow review manifest requires stable event_id')
  sys.path.insert(0,str(w.RUNTIME));from transcribe_incremental import build_model,transcribe_chunk
  from pywhispercpp.model import Model
@@ -110,25 +115,70 @@ def review(j,manifest,model_name):
  w.save(j/'review'/('timing_'+Path(manifest).stem+'_'+model_name+'.json'),{'new_inference_seconds':sum(r.get('elapsed_seconds',0) for r in outputs if not r.get('cache_reused'))+sum(p.get('elapsed_seconds',0) for r in outputs for p in r.get('repair_reviews',[]) if not p.get('cache_reused')),'cache_hits':sum(r.get('cache_reused',False) for r in outputs),'quality_pending':sum(r['quality']!='ok' for r in outputs),'unmeasured_queue_seconds':None})
  return {'reviewed_windows':len(outputs),'cached_windows':sum(x.get('cache_reused',False) for x in outputs),'pending_windows':sum(x['quality']!='ok' for x in outputs),'next_action':'targeted second round or explicit unresolved closure; no full rerun'}
 
-def raw_audit(j,results):
+def raw_audit(j,results,supplements=None):
  import evidence_candidates as e
  candidates=w.read(j/'review/candidate-plan.json');reviews=w.read(results)
- expected={x['label'] for x in w.read(j/'review/windows.json')}
- if not expected<={x['label'] for x in reviews}:raise ValueError('Every planned window needs a recorded review result')
+ selected=j/'review/selected-windows.json'
+ windows=w.read(selected if selected.exists() else j/'review/windows.json')
+ expected={x['label']:x for x in windows}
+ if len(expected)!=len(windows):raise ValueError('Duplicate labels in selected review manifest')
+ indexed={x['label']:x for x in reviews}
+ if len(indexed)!=len(reviews):raise ValueError('Duplicate review result labels')
+ missing=sorted(set(expected)-set(indexed))
+ if missing:raise ValueError('Missing selected review windows '+', '.join(missing)+' in '+str(results))
+ if selected.exists():
+  source=w.read(j/'source-manifest.json')['sha256']
+  for label,x in expected.items():
+   r=indexed[label]
+   if x.get('source_sha256')!=source or r.get('source_sha256')!=source or any(r.get(k)!=x.get(k) for k in ('channel','start','end')):
+    raise ValueError('Selected review window source/channel/time mismatch: '+label)
+  reviews=[indexed[label] for label in expected]
+ source=w.read(j/'source-manifest.json')['sha256'] if (j/'source-manifest.json').exists() else None
+ proposed=e.supplemental_from_reviews(candidates,reviews,source) if source else []
+ if supplements:
+  import re
+  manual=w.read(supplements)
+  if not isinstance(manual,list):raise ValueError('Supplemental candidates must be a list')
+  for item in manual:
+   label=item.get('window_label');r=indexed.get(label)
+   if (not re.fullmatch(r'[A-Z][A-Z0-9_]{2,40}',str(item.get('id',''))) or
+       item.get('category') not in e.REQUIRED_CATEGORIES or item.get('source_sha256')!=source or
+       label not in expected or not r or r.get('quality')!='ok' or r.get('source_sha256')!=source or
+       any(item.get(k)!=r.get(k) for k in ('start','end','channel')) or
+       not item.get('decision_source') or not r.get('segments')):
+    raise ValueError('Invalid supplemental candidate identity/source/window: '+str(item.get('id')))
+   start,end=round(r['start']*100),round(r['end']*100)
+   transcript=' '.join(s['text'] for s in r['segments'])
+   proposed=[p for p in proposed if not (p['category']==item['category'] and label in p['review_window_ids'])]
+   proposed.append({'id':item['id'],'category':item['category'],'start_ticks':start,'end_ticks':end,
+    'timestamp':f'{e.timestamp(start)}-{e.timestamp(end)}','initial_transcript':'',
+    'review_window_ids':[label],'review_transcript':transcript,'review_segments':r['segments'],
+    'review_channel':r['channel'],'review_model':r.get('model_path') or r.get('model'),
+    'review_sources':[{'window':f'{e.timestamp(start)}-{e.timestamp(end)}','channel':r['channel'],
+      'model':r.get('model_path') or r.get('model'),'conclusion':'待独立裁决','source_ref':label}],
+    'review_signals':e.extract_signals(transcript),'status':'needs_manual_review','fact_status':'unresolved',
+    'review_status':'supplemental_pending','qualifies_for_scoring':False,
+    'decision_source':item['decision_source'],'rationale':'已复核原音窗口的人工补充候选；须独立裁决'})
+ ids=[c['id'] for c in candidates+proposed]
+ if len(ids)!=len(set(ids)):raise ValueError('Duplicate candidate ID in supplemental coverage')
+ candidates+=proposed
  for x in candidates:
   if x.get('review_status') in {'scope_excluded','semantic_context'}:continue
+  if x.get('review_status')=='supplemental_pending':continue
   segments=[s for r in reviews if r['label'] in x['review_window_ids'] for s in r['segments'] if s['t1']>=x['start_ticks']/100 and s['t0']<=x['end_ticks']/100];segments.sort(key=lambda s:s['t0']);text=' '.join(s['text'] for s in segments)
   status,rationale,initial,reviewed=e.compare_signals(x['category'],x['initial_transcript'],text)
   if any(r['quality']!='ok' for r in reviews if r['label'] in x['review_window_ids']):status='needs_manual_review';rationale='录音复核退化，不能把技术完成当事实已确认'
   x.update(status=status,rationale=rationale,initial_signals=initial,review_signals=reviewed,review_transcript=text,review_segments=segments,review_channel='mix',review_model=';'.join(sorted({r['model_path'] for r in reviews if r['label'] in x['review_window_ids']})),adopted_conclusion=text if status=='confirmed' else '')
  out=e.build_audit(j/'initial.jsonl',candidates);out['quality_review_results']=reviews
  if (j/'review/semantic-scan.json').exists():
-  out.update(workflow_policy_version=f.VERSION,price_scope_policy_version=f.SCOPE,semantic_scan={**w.read(j/'review/semantic-scan.json'),'targeted_reviews_complete':expected<={r['label'] for r in reviews}})
- w.save(j/'review/evidence-audit.raw.json',out);return {'candidates':len(candidates),'needs_semantic_adjudication':sum(x['status']!='confirmed' for x in candidates)}
+  out.update(workflow_policy_version=f.VERSION,price_scope_policy_version=f.SCOPE,semantic_scan={**w.read(j/'review/semantic-scan.json'),'targeted_reviews_complete':set(expected)<={r['label'] for r in reviews} and all(r.get('quality')=='ok' for r in reviews)})
+ w.save(j/'review/evidence-audit.raw.json',out);return {'candidates':len(candidates),'supplemental_candidates':[x['id'] for x in proposed],'needs_semantic_adjudication':sum(x['status']!='confirmed' for x in candidates)}
 
 def publish(j,out_dir):
  from render_report import render,validate_review_fields
  job=w.read(j/'job.json');audit=w.read(j/'evidence-audit.json')
+ job,audit,missing=w.assemble_publication_contract(j,job,audit)
+ if missing:raise ValueError('Publication contract missing verified fields: '+', '.join(missing))
  if not service.active(job) or audit.get('service_policy_version')!=service.VERSION:raise ValueError('New publication requires matching current service_policy_version; historical validation remains available')
  job=w.derive_score(service.prepare_report(job,audit))
  if (j/'workflow-policy.json').exists():
@@ -161,7 +211,7 @@ def close(j):
  return result
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('command',choices=['preflight','rules','init','transcribe','plan-review','review','raw-audit','adjudicate','merge-trial','publish','close']);p.add_argument('--job-dir',type=Path);p.add_argument('--audio',type=Path);p.add_argument('--date',default=w.now()[:10]);p.add_argument('--manifest','--windows',dest='manifest',type=Path);p.add_argument('--trial-job-dir',type=Path);p.add_argument('--model',choices=['turbo','large'],default='turbo');p.add_argument('--decisions',type=Path);p.add_argument('--out-dir',type=Path);p.add_argument('--baseline-only',action='store_true');p.add_argument('--shadow',action='store_true');p.add_argument('--ack-full-read',action='store_true');a=p.parse_args();j=a.job_dir.resolve() if a.job_dir else None
+ p=argparse.ArgumentParser();p.add_argument('command',choices=['preflight','rules','init','transcribe','plan-review','review','raw-audit','adjudicate','merge-trial','publish','close']);p.add_argument('--job-dir',type=Path);p.add_argument('--audio',type=Path);p.add_argument('--date',default=w.now()[:10]);p.add_argument('--manifest','--windows',dest='manifest',type=Path);p.add_argument('--supplemental-candidates',type=Path);p.add_argument('--trial-job-dir',type=Path);p.add_argument('--model',choices=['turbo','large'],default='turbo');p.add_argument('--decisions',type=Path);p.add_argument('--out-dir',type=Path);p.add_argument('--baseline-only',action='store_true');p.add_argument('--shadow',action='store_true');p.add_argument('--ack-full-read',action='store_true');a=p.parse_args();j=a.job_dir.resolve() if a.job_dir else None
  if a.command!='preflight' and j is None:p.error('--job-dir is required')
  if a.command=='init' and a.audio is None:p.error('init requires --audio')
  if a.command=='publish' and a.out_dir is None:p.error('publish requires --out-dir')
@@ -175,10 +225,15 @@ def main():
   r={'baseline':transcribe(j)};m=w.read(j/'source-manifest.json')
   if a.shadow and not a.baseline_only and ex.shadow_allowed(m['task_date'],m['sha256']):r['turbo_shadow']=transcribe(j,True)
  elif a.command=='plan-review':r=plan(j,a.decisions)
- elif a.command=='review':r=review(j,a.manifest or j/'review/windows.json',a.model)
- elif a.command=='raw-audit':r=raw_audit(j,a.manifest or j/'review/results_windows_turbo.json')
+ elif a.command=='review':r=review(j,a.manifest or (j/'review/selected-windows.json' if (j/'review/selected-windows.json').exists() else j/'review/windows.json'),a.model)
+ elif a.command=='raw-audit':r=raw_audit(j,a.manifest or (j/'review/results_selected-windows_turbo.json' if (j/'review/selected-windows.json').exists() else j/'review/results_windows_turbo.json'),a.supplemental_candidates)
  elif a.command=='adjudicate':
-  r=w.assemble_audit(w.read(j/'review/evidence-audit.raw.json'),w.read(a.decisions),j/'initial.jsonl');w.save(j/'evidence-audit.json',r);r={'candidate_count':len(r['candidates']),'unresolved':sum(x['fact_status']=='unresolved' for x in r['candidates'])}
+  r=w.assemble_audit(w.read(j/'review/evidence-audit.raw.json'),w.read(a.decisions),j/'initial.jsonl')
+  if (j/'job.json').exists():
+   job,r,missing=w.assemble_publication_contract(j,w.read(j/'job.json'),r)
+   w.save(j/'job.json',job);w.save(j/'review/publication-contract-missing.json',missing)
+  else:missing=['job.json']
+  w.save(j/'evidence-audit.json',r);r={'candidate_count':len(r['candidates']),'unresolved':sum(x['fact_status']=='unresolved' for x in r['candidates']),'publication_contract_missing':missing}
  elif a.command=='merge-trial':r=f.merge_trial(j,a.trial_job_dir,w.read(a.decisions))
  elif a.command=='publish':r=publish(j,a.out_dir)
  else:r=close(j)

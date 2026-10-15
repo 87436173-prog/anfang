@@ -111,12 +111,47 @@ def assemble_audit(raw,decisions,transcript):
     if not d.get('closure_reason') or 'affected_rows' not in d or not x.get('review_sources'):raise ValueError('Closed pending decision needs attempts, affected rows and closure reason')
     x.update(review_closed=True,qualifies_for_scoring=False,closure_reason=d['closure_reason'],affected_rows=d['affected_rows'])
   elif d['disposition']=='rejected':x.update(status='confirmed',category='reviewed_context',qualifies_for_scoring=False,review_signals={'trial':[],'quote_components':{}})
-  else:x['status']='confirmed'
+  else:
+   x['status']='confirmed'
+   if c.get('review_status')=='supplemental_pending':
+    if not (x.get('review_sources') and x.get('review_transcript') and x.get('review_channel') and x.get('review_model')):raise ValueError('Confirmed supplement lacks reviewed original-audio provenance: '+cid)
+    if c.get('decision_source'):
+     from service_policy import original_reviews_valid
+     if not original_reviews_valid(d.get('review_sources')) or any(source.get('source_ref') not in c.get('review_window_ids',[]) for source in d['review_sources']):raise ValueError('Manual supplement needs independent original-audio review tied to selected window: '+cid)
+    for source in x['review_sources']:
+     if isinstance(source,dict) and source.get('conclusion')=='待独立裁决':source['conclusion']=d['conclusion']
+    x['qualifies_for_scoring']=True
   result.append(x)
  out={**raw,**e.build_audit(Path(transcript),result)}
  from feedback_policy import quote_sources
  out['derived']['quote_completeness']=quote_sources(result,out['derived']['quote_completeness'])
  out['adjudication_schema']='review-fact-separate-v1';return out
+
+
+def assemble_publication_contract(job_dir,job,audit):
+ """Mirror existing reviewed facts into the publication contract without inventing positive evidence."""
+ import copy
+ from service_policy import VERSION
+ j=Path(job_dir);job=copy.deepcopy(job);audit=copy.deepcopy(audit);missing=[]
+ policy=j/'service-policy.json'
+ snapshot=read(policy).get('service_policy_version') if policy.exists() else job.get('service_policy_version')
+ if snapshot==VERSION:
+  for document in (job,audit):
+   if document.get('service_policy_version',VERSION)!=VERSION:raise ValueError('Conflicting service_policy_version')
+   document['service_policy_version']=VERSION
+ for key in ('trial_safety_policy_version','row_assessments','starbucks_service'):
+  left,right=job.get(key),audit.get(key)
+  if left is not None and right is not None and left!=right:raise ValueError('job/audit '+key+' conflict')
+  if left is not None:audit[key]=copy.deepcopy(left)
+  elif right is not None:job[key]=copy.deepcopy(right)
+  else:missing.append(key)
+ if 'starbucks_introduction' not in job and isinstance(audit.get('starbucks_introduction'),dict):
+  record=audit['starbucks_introduction'];reviews=record.get('reviews') or []
+  if record.get('status') in {'已介绍','未介绍','待核实'} and reviews and reviews[0].get('window'):
+   job['starbucks_introduction']={'status':record['status'],'evidence':reviews[0]['window']+' '+str(reviews[0].get('conclusion',''))}
+ if 'starbucks_introduction' not in job:missing.append('starbucks_introduction.job')
+ if 'starbucks_introduction' not in audit:missing.append('starbucks_introduction.audit')
+ return job,audit,missing
 
 def derive_score(job):
  import copy

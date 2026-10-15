@@ -79,12 +79,15 @@ def summarize(day=None):
   if mixed and status=='通过':status='样本不足'
   for group in policy_groups.values():
    values=group.pop('seconds_saved');group['mean_seconds_saved']=sum(values)/len(values) if values else None
-  evaluated.append({'feature':f,'status':status,'workflow_policy_groups':policy_groups,'mixed_policy_comparison':mixed,'observations':len(observed),'verified_cases':len(verified),'regressions':problem_count,'pending_feedback':pending_feature,'mean_seconds_saved':round(sum(savings)/len(savings),2) if savings else None,'recommendation':'保留现行正式要求，处理已确认问题' if problem_count else '满足质量门槛；提交采用建议' if complete else '补齐配对录音/独立证据对照，不能按无反馈推定通过'})
+  recommendation={'有问题':'保留现行正式要求，处理已确认问题','通过':'满足质量门槛；提交采用建议','样本不足':'补齐配对录音/独立证据对照，不能按无反馈推定通过'}[status]
+  evaluated.append({'feature':f,'status':status,'workflow_policy_groups':policy_groups,'mixed_policy_comparison':mixed,'observations':len(observed),'verified_cases':len(verified),'regressions':problem_count,'pending_feedback':pending_feature,'mean_seconds_saved':round(sum(savings)/len(savings),2) if savings else None,'recommendation':recommendation})
  pending=[{'hash':x['audio_sha256'],'claim':f['user_claim']} for x in allcases for f in x.get('feedback',[]) if f['status']=='needs_manual_review']
  result={'experiment':c,'evaluated_at':now(),'as_of_date':day,'period_complete':day>c['last_test_date'],'case_count':len(allcases),'features':evaluated,'pending_feedback':pending,'automatic_adoption':False,'missing_data_policy':'未提供的录音、耗时及反馈不填0，不算通过','input_fingerprint':digest({'config':c,'cases':allcases})}
- prefix='evaluation' if result['period_complete'] else 'progress';save(STATE/(prefix+'.json'),result)
- rows=['# 日常评分流程10天测试结果','',f"测试期：{c['start_date']} 至 {c['last_test_date']}；汇总时间：{result['evaluated_at']}",f"已记录录音：{len(allcases)}；待原音核验反馈：{len(pending)}",'','|项目|结论|独立验证样本|问题数|平均节省秒数|','|---|---|---:|---:|---:|']
- for x in evaluated:rows.append(f"|{x['feature']}|{x['status']}|{x['verified_cases']}|{x['regressions']}|{x['mean_seconds_saved'] if x['mean_seconds_saved'] is not None else '缺失'}|")
+ prefix='evaluation' if result['period_complete'] else 'progress'
+ if result['period_complete']:prefix+='-'+result['input_fingerprint'][:12]
+ save(STATE/(prefix+'.json'),result)
+ rows=['# 日常评分流程10天测试结果','',f"测试期：{c['start_date']} 至 {c['last_test_date']}；汇总时间：{result['evaluated_at']}",f"已记录录音：{len(allcases)}；待原音核验反馈：{len(pending)}",'','|项目|结论|独立验证样本|问题数|平均节省秒数|采用建议|','|---|---|---:|---:|---:|---|']
+ for x in evaluated:rows.append(f"|{x['feature']}|{x['status']}|{x['verified_cases']}|{x['regressions']}|{x['mean_seconds_saved'] if x['mean_seconds_saved'] is not None else '缺失'}|{x['recommendation']}|")
  rows+=['','样本不足不视为通过。实际评分与原音证据要求继续执行；汇总产出采用建议。'];(STATE/(prefix+'.md')).write_text('\n'.join(rows)+'\n',encoding='utf-8');return result
 
 def main():

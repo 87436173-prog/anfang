@@ -127,6 +127,53 @@ def category_hits(records: list[dict]) -> dict[str, list[dict]]:
     return found
 
 
+def supplemental_from_reviews(candidates: list[dict], reviews: list[dict], source_sha256: str) -> list[dict]:
+    """Surface missed high-impact categories from already decoded audio; never confirm them."""
+    import hashlib
+    target = {"model_configuration", "na_basis", "bonus_wet_tissue", "starbucks_introduction", "price_policy"}
+    absent = target - {c.get("category") for c in candidates}
+    result = []
+    for review in reviews:
+        if review.get("quality") != "ok" or review.get("source_sha256") != source_sha256:
+            continue
+        records = [{"t0": round(s["t0"] * 100), "t1": round(s["t1"] * 100), "text": s["text"]} for s in review.get("segments", [])]
+        hits = category_hits(records)
+        for category in sorted(absent & hits.keys()):
+            if category == "price_policy":
+                from feedback_policy import price_candidate_relevant
+                if not any(price_candidate_relevant(h["text"]) for h in hits[category]):
+                    continue
+            label = review["label"]
+            stable = hashlib.sha256(f"{source_sha256}:{label}:{category}".encode()).hexdigest()[:12].upper()
+            start, end = round(review["start"] * 100), round(review["end"] * 100)
+            transcript = " ".join(s["text"] for s in review["segments"])
+            result.append({"id":"SUP_" + stable,"category":category,"start_ticks":start,"end_ticks":end,
+                           "timestamp":f"{timestamp(start)}-{timestamp(end)}","initial_transcript":"",
+                           "review_window_ids":[label],"review_transcript":transcript,"review_segments":review["segments"],
+                           "review_channel":review["channel"],"review_model":review.get("model_path") or review.get("model"),
+                           "review_sources":[{"window":f"{timestamp(start)}-{timestamp(end)}","channel":review["channel"],
+                                              "model":review.get("model_path") or review.get("model"),"conclusion":"待独立裁决", 
+                                              "source_ref":label}],"review_signals":extract_signals(transcript),
+                           "trigger_terms":sorted({term for h in hits[category] for term in h["terms"]}),
+                           "status":"needs_manual_review","fact_status":"unresolved","review_status":"supplemental_pending",
+                           "qualifies_for_scoring":False,"rationale":"已复核窗口出现高影响语义，但自动候选缺失；须逐项裁决"})
+    merged = {}
+    for item in result:
+        key = (item['category'], item['start_ticks'], item['end_ticks'])
+        if key not in merged:
+            merged[key] = item
+            continue
+        prior = merged[key]
+        prior['review_window_ids'].extend(item['review_window_ids'])
+        prior['review_sources'].extend(item['review_sources'])
+        prior['review_segments'].extend(item['review_segments'])
+        prior['trigger_terms'] = sorted(set(prior['trigger_terms']) | set(item['trigger_terms']))
+        prior['review_transcript'] += ' ' + item['review_transcript']
+        if item['review_channel'] == 'mix':prior['review_channel'] = 'mix'
+        prior['review_signals'] = extract_signals(prior['review_transcript'])
+    return list(merged.values())
+
+
 def build_candidates(records: list[dict], context_ticks: int = 1200, merge_gap_ticks: int = 800) -> list[dict]:
     if not records:
         return []

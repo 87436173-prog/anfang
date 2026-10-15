@@ -23,8 +23,10 @@ plan-review先产生candidate-plan.json供全量语义审读定位。写review-s
 - full_transcript_read=true仅在真实完整阅读后填写；transcript_sha256必须是本接待initial.jsonl的内容哈希；rationale说明扫描与选择原则。
 - candidates必须覆盖全部候选且每id一次；action为review/context，各自有rationale。真正用于计分或范围内合规的事实用review，无关背景及不采信的触发词用context。context保留original_category、原文和排除理由，fact_status=rejected、qualifies_for_scoring=false；不得解释成行为已确认存在。
 - 不按关键词自动把所有试驾线索确认为已发生或统一驳回；独立主模型结合前后语义、说话人、当前客户、相反证据逐事件判断。独立邀约轮次须分开；发现漏候选时补入结构化候选后复用已核验窗口或定向补窗，不写客户结论程序。
-- B3前三分钟原始各声道和混音仍必须复核，单声道只mix；使用review --manifest review/b3-windows.json。普通事件用review --manifest review/windows.json。--windows是--manifest兼容别名，非法时间、声道、缺字段在解码前拒绝。
+- B3前三分钟原始各声道和混音仍必须复核，单声道只mix。执行review-selection后，plan-review生成review/selected-windows.json，合并已选普通事件与强制B3窗口；review和raw-audit默认读取该清单及其对应results_selected-windows_turbo.json。历史无筛选任务仍兼容review/windows.json和review/b3-windows.json。--windows是--manifest兼容别名，非法时间、声道、缺字段在解码前拒绝。
 - 没有review-selection时保留旧固定试驾扫窗作为兜底；有完整语义筛选合同时，旧前15分钟/最后25%/报价前后90秒扫窗按逐事件相关性选择，不能把未执行的ASR窗写成“已原音复核”。semantic_scan记录全文审读与定向处理完成；老流程合同只读兼容。
+- raw-audit还会从已完成的复核结果查找自动候选缺失的车型配置、NA依据、湿纸巾、星巴克和范围内价格语义，形成`SUP_...`待裁决候选，不能自动确认为得分事实。若原音已确认但转写未触发词（例如“湿纸巾”转写成“十纸巾”），可用`raw-audit --supplemental-candidates <JSON>`加入固定补充清单。每条须有`id/category/source_sha256/window_label/start/end/channel/decision_source`，窗口必须在已选复核清单中且同源同声道同时间；仅建立候选。人工补充候选在adjudicate确认为事实时，还须提供与已选窗口对应的`review_sources`（window/channel/model/conclusion/source_ref），记录独立原音结论。禁止手改candidate-plan.json或凭总结补分。
+- adjudicate对已有job/audit镜像已记录的服务规则版本、逐行裁决、星巴克三态和试驾安全口径，并记录缺项；publish在生成PNG前拒绝未补全或相互矛盾的字段。E2的六要素布尔值、来源与缺项从同一审计派生，未确认来源只记线索，不得写入确认来源。
 
 ## 合并、缓存和两轮停止条件
 

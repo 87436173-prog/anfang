@@ -6,6 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import workflow_support as w
 import scoring_pipeline as pipeline
 import feedback_policy as f
+import service_policy as service
 import render_report as renderer
 import validate_score_job as validator
 import evidence_candidates as evidence
@@ -43,7 +44,7 @@ class FeedbackRegressionTests(unittest.TestCase):
 
     def test_candidate_selection_requires_every_id_and_exact_transcript(self):
         with tempfile.TemporaryDirectory() as tmp:
-            j=Path(tmp);w.save(j/"source-manifest.json",{"duration_seconds":1000,"channels":2,"task_date":"2026-11-01"})
+            j=Path(tmp);w.save(j/"source-manifest.json",{"sha256":"SOURCE","duration_seconds":1000,"channels":2,"task_date":"2026-11-01"})
             (j/"initial.jsonl").write_text(json.dumps({"t0":0,"t1":1000,"text":"贷款免息，赠送脚垫"},ensure_ascii=False)+"\n",encoding="utf-8")
             candidates=f.scoped_candidates(evidence.build_candidates(evidence.load_jsonl(j/"initial.jsonl")))
             selection={"full_transcript_read":True,"transcript_sha256":w.sha(j/"initial.jsonl"),"rationale":"完整审读，并逐候选决定是否需要计分复核","candidates":[{"id":c["id"],"action":"context","rationale":"不作为本次计分事实"} for c in candidates]}
@@ -52,9 +53,82 @@ class FeedbackRegressionTests(unittest.TestCase):
                 result=pipeline.plan(j,j/"selection.json")
             self.assertEqual(result["union_windows"],0)
             self.assertEqual(result["mandatory_b3_channels"],["left","right","mix"])
+            selected=w.read(j/"review/selected-windows.json")
+            self.assertEqual({x["label"] for x in selected},{"B3_left","B3_right","B3_mix"})
+            self.assertTrue(all(x["source_sha256"]==w.read(j/"source-manifest.json").get("sha256") for x in selected))
             selection["candidates"]=selection["candidates"][:-1];w.save(j/"selection.json",selection)
             with self.assertRaises(ValueError),patch.object(experiment,"active",return_value=False):
                 pipeline.plan(j,j/"selection.json")
+
+    def test_raw_audit_accepts_only_selected_source_matched_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            j=Path(tmp);w.save(j/"source-manifest.json",{"sha256":"SOURCE"})
+            w.save(j/"review/candidate-plan.json",[])
+            w.save(j/"review/windows.json",[{"label":"unselected","start":0,"end":4,"channel":"mix"}])
+            selected=[{"label":"B3_mix","start":0,"end":3,"channel":"mix","source_sha256":"SOURCE"}]
+            w.save(j/"review/selected-windows.json",selected)
+            (j/"initial.jsonl").write_text("",encoding="utf-8")
+            result={**selected[0],"quality":"ok","model_path":"turbo","segments":[]}
+            results=j/"review/results_selected-windows_turbo.json";w.save(results,[result])
+            pipeline.raw_audit(j,results)
+            self.assertEqual(len(w.read(j/"review/evidence-audit.raw.json")["quality_review_results"]),1)
+            w.save(results,[])
+            with self.assertRaisesRegex(ValueError,"B3_mix"):pipeline.raw_audit(j,results)
+            w.save(results,[{**result,"channel":"left"}])
+            with self.assertRaisesRegex(ValueError,"source/channel/time mismatch"):pipeline.raw_audit(j,results)
+
+    def test_reviewed_wet_tissue_without_initial_candidate_becomes_pending_supplement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            j=Path(tmp);w.save(j/"source-manifest.json",{"sha256":"SOURCE"})
+            w.save(j/"review/candidate-plan.json",[])
+            window={"label":"WET","start":10,"end":20,"channel":"mix","source_sha256":"SOURCE"}
+            w.save(j/"review/selected-windows.json",[window])
+            (j/"initial.jsonl").write_text("",encoding="utf-8")
+            result={**window,"quality":"ok","model_path":"turbo","segments":[{"t0":12,"t1":14,"text":"给您拿湿纸巾"}]}
+            results=j/"review/results_selected-windows_turbo.json";w.save(results,[result])
+            summary=pipeline.raw_audit(j,results)
+            self.assertEqual(len(summary["supplemental_candidates"]),1)
+            raw=w.read(j/"review/evidence-audit.raw.json");candidate=raw["candidates"][0]
+            self.assertEqual(candidate["category"],"bonus_wet_tissue")
+            self.assertEqual(candidate["fact_status"],"unresolved")
+            final=w.assemble_audit(raw,[{"id":candidate["id"],"disposition":"confirmed","rationale":"独立原音确认提供","conclusion":"已提供湿纸巾"}],j/"initial.jsonl")
+            self.assertTrue(service.confirmed_source(final["candidates"][0]))
+            manual=[{"id":"MAN_WET","category":"bonus_wet_tissue","source_sha256":"OTHER","window_label":"WET","start":10,"end":20,"channel":"mix","decision_source":"原音复核"}]
+            w.save(j/"manual.json",manual)
+            with self.assertRaisesRegex(ValueError,"source/window"):pipeline.raw_audit(j,results,j/"manual.json")
+            manual[0]["source_sha256"]="SOURCE";w.save(j/"manual.json",manual)
+            pipeline.raw_audit(j,results,j/"manual.json")
+            raw=w.read(j/"review/evidence-audit.raw.json")
+            decision={"id":"MAN_WET","disposition":"confirmed","rationale":"原音复核","conclusion":"确认提供湿纸巾"}
+            with self.assertRaisesRegex(ValueError,"independent original-audio review"):
+                w.assemble_audit(raw,[decision],j/"initial.jsonl")
+            decision["review_sources"]=[{"window":"00:10-00:20","channel":"mix","model":"turbo","conclusion":"确认提供","source_ref":"WET"}]
+            final=w.assemble_audit(raw,[decision],j/"initial.jsonl")
+            self.assertTrue(service.confirmed_source(final["candidates"][0]))
+
+    def test_supplemental_scan_merges_same_time_original_channels(self):
+        reviews=[{"label":"B3_"+channel,"start":0,"end":180,"channel":channel,"quality":"ok","source_sha256":"SOURCE","model":"turbo",
+                  "segments":[{"t0":10,"t1":12,"text":"这是高配版本"}]} for channel in ("left","right","mix")]
+        additions=evidence.supplemental_from_reviews([],reviews,"SOURCE")
+        self.assertEqual(len(additions),1)
+        self.assertEqual(set(additions[0]["review_window_ids"]),{"B3_left","B3_right","B3_mix"})
+        self.assertEqual(additions[0]["status"],"needs_manual_review")
+
+    def test_publication_contract_mirrors_only_existing_verified_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            j=Path(tmp);w.save(j/"service-policy.json",{"service_policy_version":service.VERSION})
+            service_states={k:{"status":"not_confirmed","evidence":"00:00-10:00原音未确认"} for k in ("introduction","provided","consumed")}
+            job={"row_assessments":{"B3":{"kind":"evidence","rationale":"三项逐一核验"}},"starbucks_service":service_states,"trial_safety_policy_version":"trial-itemwise-2026-10-12-v1"}
+            audit={"starbucks_introduction":{"status":"未介绍","reviews":[{"window":"00:00-10:00","conclusion":"未听到介绍"}]}}
+            filled_job,filled_audit,missing=w.assemble_publication_contract(j,job,audit)
+            self.assertEqual(missing,[])
+            self.assertEqual(filled_audit["row_assessments"],job["row_assessments"])
+            self.assertEqual(filled_audit["starbucks_service"],service_states)
+            self.assertEqual(filled_job["starbucks_introduction"]["status"],"未介绍")
+            self.assertEqual(filled_audit["service_policy_version"],service.VERSION)
+            _,_,missing=w.assemble_publication_contract(j,{},audit)
+            self.assertIn("starbucks_service",missing)
+            self.assertIn("row_assessments",missing)
 
     def test_unknown_fact_cannot_close_into_points_or_na(self):
         c={"id":"E1","fact_status":"unresolved","review_closed":True,"qualifies_for_scoring":False,"review_sources":[{"window":"01:00-01:20","channel":"right","model":"large"}],"closure_reason":"两轮仍听不清","affected_rows":["B3"]}
@@ -73,7 +147,7 @@ class FeedbackRegressionTests(unittest.TestCase):
     def test_explicit_delivery_override_keeps_original_candidate_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             transcript=Path(tmp)/"initial.jsonl";transcript.write_text("",encoding="utf-8")
-            c={"id":"E1","category":"price_policy","status":"needs_manual_review","timestamp":"02:28-02:51","start_ticks":14800,"end_ticks":17100,"initial_transcript":"预计二十天至一个月","review_transcript":"预计二十天至一个月","review_signals":{"quote_components":{"delivery":False}}}
+            c={"id":"E1","category":"price_policy","status":"needs_manual_review","timestamp":"02:28-02:51","start_ticks":14800,"end_ticks":17100,"initial_transcript":"预计二十天至一个月","review_transcript":"预计二十天至一个月","review_channel":"mix","review_model":"turbo","review_signals":{"quote_components":{"delivery":False}}}
             raw=evidence.build_audit(transcript,[c])
             final=w.assemble_audit(raw,[{"id":"E1","disposition":"confirmed","rationale":"原音解释交期","conclusion":"交期20天至一个月","quote_components":{"delivery":True}}],transcript)
             quote=final["derived"]["quote_completeness"]
@@ -185,6 +259,23 @@ class FeedbackRegressionTests(unittest.TestCase):
         self.assertEqual(result["status"],"样本不足")
         self.assertTrue(result["mixed_policy_comparison"])
         self.assertIsNone(result["mean_seconds_saved"])
+        self.assertIn("补齐配对",result["recommendation"])
+        self.assertNotIn("提交采用",result["recommendation"])
+
+    def test_experiment_advice_tracks_final_status_and_preserves_old_evaluation(self):
+        verified={"result":"improved","quality_verified":True,"audit_ref":"independent"}
+        for count,regression,expected in ((5,False,"样本不足"),(10,False,"通过"),(10,True,"有问题")):
+            cases=[{"audio_sha256":str(n),"date":"2026-10-09","workflow_policy_version":f.VERSION,
+                    "features":{"B8":{**verified,**({"result":"regression"} if regression and n==0 else {})}},"feedback":[]} for n in range(count)]
+            with tempfile.TemporaryDirectory() as tmp,patch.object(experiment,"STATE",Path(tmp)),patch.object(experiment,"cases",return_value=cases):
+                (Path(tmp)/"evaluation.json").write_text('{"historical":true}',encoding="utf-8")
+                summary=experiment.summarize("2026-10-15")
+                b8=summary["features"][-1]
+                self.assertEqual(b8["status"],expected)
+                self.assertEqual(b8["recommendation"],{"样本不足":"补齐配对录音/独立证据对照，不能按无反馈推定通过","通过":"满足质量门槛；提交采用建议","有问题":"保留现行正式要求，处理已确认问题"}[expected])
+                self.assertEqual((Path(tmp)/"evaluation.json").read_text(encoding="utf-8"),'{"historical":true}')
+                versioned=Path(tmp)/("evaluation-"+summary["input_fingerprint"][:12]+".md")
+                self.assertIn(b8["recommendation"],versioned.read_text(encoding="utf-8"))
 
 
     def test_semantic_invitation_and_delivery_candidates_are_not_omitted(self):

@@ -5,6 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import service_policy as p
 import validate_score_job as v
 import workflow_support as w
+import feedback_policy as f
 
 def candidate(cid='Q',category='na_basis'):
  return {'id':cid,'category':category,'status':'confirmed','fact_status':'confirmed','timestamp':'01:00-01:20','review_channel':'mix','review_model':'large-v3-turbo','review_transcript':'原音已核验','introduced_to_customer':True}
@@ -12,10 +13,21 @@ def base():
  rows=[['E','E2','报价',3,0,'01:00','待生成'],['B','B8','湿纸巾',3,0,'01:00','未确认'],['B','B8coffee','星巴克',3,0,'01:00','未确认']]
  service={k:{'status':'not_confirmed','evidence':'00:00-20:00未确认'} for k in ('introduction','provided','consumed')}
  assessment={'E2':{'kind':'evidence','rationale':'六要素逐一复核'}}
- audit={'service_policy_version':p.VERSION,'row_assessments':assessment,'candidates':[candidate()], 'starbucks_service':service,'derived':{'quote_completeness':{'components':{'vehicle_or_price':True},'component_sources':{'vehicle_or_price':['Q']}}}}
+ audit={'service_policy_version':p.VERSION,'row_assessments':assessment,'candidates':[candidate('Q','price_policy')], 'starbucks_service':service,'derived':{'quote_completeness':{'components':{k:k=='vehicle_or_price' for k in p.E2_COMPONENTS},'component_sources':{'vehicle_or_price':['Q']}}}}
  job={'service_policy_version':p.VERSION,'row_assessments':assessment,'starbucks_service':service,'rows':rows}
  return p.prepare_report(job,audit),audit
 class ServicePolicyTests(unittest.TestCase):
+ def test_e2_rejects_job_quote_component_contradiction_even_at_zero(self):
+  job,audit=base()
+  job['quote_components']={'vehicle_or_price':True,'gifts':True}
+  with self.assertRaisesRegex(ValueError,'quote_components'):
+   p.prepare_report(job,audit)
+ def test_quote_hint_from_nonqualifying_candidate_is_not_a_confirmed_gift(self):
+  hint=candidate('E058','reviewed_context');hint['review_signals']={'quote_components':{'gifts':True}}
+  quote=f.quote_sources([hint],{'components':{'gifts':True}})
+  self.assertFalse(quote['components']['gifts'])
+  self.assertNotIn('gifts',quote['component_sources'])
+  self.assertEqual(quote['component_hints']['gifts'],['E058'])
  def errors(self,job,audit):
   errors=[];p.validate(job,audit,errors);return errors
  def test_e2_deduction_names_only_unconfirmed_components(self):
@@ -27,6 +39,7 @@ class ServicePolicyTests(unittest.TestCase):
   job,audit=base();job['rows'][0][4]=3
   audit['derived']['quote_completeness']={'components':{k:True for k in p.E2_COMPONENTS},'component_sources':{k:['Q'] for k in p.E2_COMPONENTS}}
   audit['candidates'][0].pop('review_channel')
+  job.pop('quote_components');job.pop('component_sources')
   job=p.prepare_report(job,audit)
   self.assertTrue(any('six original-audio' in x for x in self.errors(job,audit)))
  def test_starbucks_introduction_awards_without_consumption(self):

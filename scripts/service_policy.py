@@ -29,6 +29,10 @@ def missing_e2(audit):
 def prepare_report(job,audit):
  v=copy.deepcopy(job)
  if not active(v):return v
+ q=audit.get('derived',{}).get('quote_completeness',{});components={k:k not in missing_e2(audit) for k in E2_COMPONENTS}
+ if 'quote_components' in v and v['quote_components']!=components:raise ValueError('job.quote_components conflicts with confirmed audit quote components')
+ if 'component_sources' in v and v['component_sources']!=q.get('component_sources',{}):raise ValueError('job.component_sources conflicts with confirmed audit sources')
+ v['quote_components']=components;v['component_sources']=copy.deepcopy(q.get('component_sources',{}))
  missing=missing_e2(audit);v['e2_missing_components']=missing
  for r in v.get('rows',[]):
   if r[1]=='E2' and r[4]==0:r[6]='报价六要素中未确认：'+'、'.join(E2_COMPONENTS[k] for k in missing)+'；E2记0分。'
@@ -157,6 +161,11 @@ def validate(job,audit,errors):
   elif a.get('default_deduction_points',0)!=0:errors.append(key+' evidence/NA rows cannot hide deductions as defaults')
   validate_negative(key,row,a,audit,errors)
  missing=missing_e2(audit)
+ expected_components={k:k not in missing for k in E2_COMPONENTS}
+ if job.get('quote_components')!=expected_components:errors.append('job.quote_components differs from confirmed audit quote components')
+ if job.get('component_sources')!=audit.get('derived',{}).get('quote_completeness',{}).get('component_sources',{}):errors.append('job.component_sources differs from confirmed audit quote sources')
+ q=audit.get('derived',{}).get('quote_completeness',{})
+ if q.get('components',{})!=expected_components:errors.append('audit quote components differ from qualifying sources')
  if job.get('e2_missing_components')!=missing:errors.append('E2 missing-components list differs from independently reviewed component sources')
  e2=rows.get('E2')
  if e2 and e2[4]==0:
