@@ -2,6 +2,8 @@
 
 2026-10-10起新评分及本次五单复核，另必填[服务补充合同](service-scoring-policy.md)：service_policy_version、逐行row_assessments、e2_missing_components、三种星巴克服务状态；NA原因见[矩阵](na-decision-matrix.md)。B8coffee改为介绍加分；C5bonus/D8bonus是独立0/2加分行，不计基础满分和NA。
 
+2026-10-15起新录音同时在job与audit标记`sendoff_policy_version=wet-tissue-outside-2026-10-15-v1`。B7满分需在`row_assessments.B7.farewell_words_evidence_ids`引用已确认的送别词原音候选；“门外”依据可引用`outside_evidence_ids`，也可由已确认实际送出且B8=3的湿纸巾自动推定。若原音明确与门外相反，则填写`outside_contrary_evidence_ids`和`outside_contrary_rationale`，该证据覆盖推定。仅湿纸巾提及/承诺不够。历史job不自动补写标记。
+
 `render_report.py`读取UTF-8 JSON。核心字段：
 
 ```json

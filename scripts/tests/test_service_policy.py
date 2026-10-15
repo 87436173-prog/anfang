@@ -17,6 +17,54 @@ def base():
  job={'service_policy_version':p.VERSION,'row_assessments':assessment,'starbucks_service':service,'rows':rows}
  return p.prepare_report(job,audit),audit
 class ServicePolicyTests(unittest.TestCase):
+ def sendoff_case(self,wet=True,farewell=True,contrary=False,score=2):
+  job,audit=base()
+  job['sendoff_policy_version']=audit['sendoff_policy_version']=p.SENDOFF_VERSION
+  job['rows'].append(['B','B7','送别',2,score,'02:00','待生成'])
+  assessment={'kind':'evidence','rationale':'送别词及门外依据逐项核查'}
+  if farewell:
+   audit['candidates'].append(candidate('F','sendoff_farewell'))
+   assessment['farewell_words_evidence_ids']=['F']
+  if wet:
+   job['rows'][1][4]=3
+   audit['candidates'].append(candidate('W','bonus_wet_tissue'))
+  if contrary:
+   audit['candidates'].append(candidate('X','sendoff_location'))
+   assessment['outside_contrary_evidence_ids']=['X']
+   assessment['outside_contrary_rationale']='原音明确在店内交付后告别'
+  job['row_assessments']['B7']=assessment
+  audit['row_assessments']=copy.deepcopy(job['row_assessments'])
+  return p.prepare_report(job,audit),audit
+ def test_wet_tissue_delivery_defaults_outside_but_still_needs_farewell(self):
+  job,audit=self.sendoff_case()
+  self.assertEqual(self.errors(job,audit),[])
+  self.assertIn('默认送至门外',job['rows'][-1][6])
+  job,audit=self.sendoff_case(farewell=False,score=0)
+  self.assertEqual(self.errors(job,audit),[])
+  self.assertIn('送别词未确认',job['rows'][-1][6])
+  job['rows'][-1][4]=2
+  self.assertTrue(any('B7=2 requires' in x for x in self.errors(job,audit)))
+ def test_wet_tissue_mention_or_unconfirmed_provision_cannot_imply_outside(self):
+  job,audit=self.sendoff_case(wet=False)
+  audit['candidates'].append(candidate('W','bonus_wet_tissue'))
+  audit['candidates'][-1]['status']='unresolved'
+  self.assertTrue(any('B7=2 requires' in x for x in self.errors(job,audit)))
+  audit['candidates'][-1]['status']='confirmed'
+  self.assertTrue(any('B7=2 requires' in x for x in self.errors(job,audit)))  # B8=0 means delivery is not established.
+ def test_clear_contrary_location_overrides_wet_tissue_default(self):
+  job,audit=self.sendoff_case(contrary=True,score=0)
+  self.assertEqual(self.errors(job,audit),[])
+  job['rows'][-1][4]=2
+  self.assertTrue(any('B7=2 requires' in x for x in self.errors(job,audit)))
+ def test_confirmed_farewell_and_wet_default_cannot_be_scored_zero(self):
+  job,audit=self.sendoff_case(score=0)
+  self.assertTrue(any('B7=0 conflicts' in x for x in self.errors(job,audit)))
+ def test_direct_outside_evidence_still_qualifies_without_wet_tissue(self):
+  job,audit=self.sendoff_case(wet=False)
+  audit['candidates'].append(candidate('O','sendoff_location'))
+  job['row_assessments']['B7']['outside_evidence_ids']=['O']
+  audit['row_assessments']=copy.deepcopy(job['row_assessments'])
+  self.assertEqual(self.errors(job,audit),[])
  def test_e2_rejects_job_quote_component_contradiction_even_at_zero(self):
   job,audit=base()
   job['quote_components']={'vehicle_or_price':True,'gifts':True}

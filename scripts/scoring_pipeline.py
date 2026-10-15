@@ -180,6 +180,9 @@ def publish(j,out_dir):
  job,audit,missing=w.assemble_publication_contract(j,job,audit)
  if missing:raise ValueError('Publication contract missing verified fields: '+', '.join(missing))
  if not service.active(job) or audit.get('service_policy_version')!=service.VERSION:raise ValueError('New publication requires matching current service_policy_version; historical validation remains available')
+ if w.read(j/'source-manifest.json').get('task_date','')>='2026-10-15':
+  job['sendoff_policy_version']=service.SENDOFF_VERSION
+  audit['sendoff_policy_version']=service.SENDOFF_VERSION
  job=w.derive_score(service.prepare_report(job,audit))
  if (j/'workflow-policy.json').exists():
   job.update(workflow_policy_version=f.VERSION,price_scope_policy_version=f.SCOPE)
@@ -219,7 +222,7 @@ def main():
  if a.command=='merge-trial' and (a.trial_job_dir is None or a.decisions is None):p.error('merge-trial requires --trial-job-dir and --decisions matching JSON')
  if a.command=='preflight':r=w.preflight();r={k:r[k] for k in ('status','checked_at','threads','reused')}
  elif a.command=='rules':r=w.rule_snapshot(j,a.ack_full_read)
- elif a.command=='init':m,reused=w.import_source(a.audio,j,a.date);w.save(j/'workflow-policy.json',{'version':f.VERSION,'price_scope_policy_version':f.SCOPE,'review_round_limit':2,'shadow_default':False});w.save(j/'service-policy.json',{'service_policy_version':service.VERSION});r={'sha256':m['sha256'],'sample_rate':m['sample_rate'],'channels':m['channels'],'duration_seconds':m['duration_seconds'],'manifest_reused':reused}
+ elif a.command=='init':m,reused=w.import_source(a.audio,j,a.date);w.save(j/'workflow-policy.json',{'version':f.VERSION,'price_scope_policy_version':f.SCOPE,'review_round_limit':2,'shadow_default':False});w.save(j/'service-policy.json',{'service_policy_version':service.VERSION,**({'sendoff_policy_version':service.SENDOFF_VERSION} if m.get('task_date','')>='2026-10-15' else {})});r={'sha256':m['sha256'],'sample_rate':m['sample_rate'],'channels':m['channels'],'duration_seconds':m['duration_seconds'],'manifest_reused':reused}
  elif a.command=='transcribe':
   import workflow_experiment as ex
   r={'baseline':transcribe(j)};m=w.read(j/'source-manifest.json')

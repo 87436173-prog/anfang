@@ -2,6 +2,7 @@
 from __future__ import annotations
 import copy,re
 VERSION='service-policy-2026-10-10-v1'
+SENDOFF_VERSION='wet-tissue-outside-2026-10-15-v1'
 E2_COMPONENTS={'vehicle_or_price':'车型/价格','payment_or_finance':'付款或金融方案','fees':'费用构成','gifts':'赠品','delivery':'明确预计交车周期','interior_color':'销售讲解内饰颜色'}
 BONUS_ROWS={'A3','B8','B8coffee','C5bonus','D8bonus'}
 BONUS_TOTALS={a+b+c+d for a in (0,3) for b in (0,3,6) for c in (0,2) for d in (0,2)}
@@ -37,12 +38,24 @@ def prepare_report(job,audit):
  for r in v.get('rows',[]):
   if r[1]=='E2' and r[4]==0:r[6]='报价六要素中未确认：'+'、'.join(E2_COMPONENTS[k] for k in missing)+'；E2记0分。'
   elif r[1]=='B8coffee':r[2]='星巴克简单介绍加分'
+  elif r[1]=='B7' and v.get('sendoff_policy_version')==SENDOFF_VERSION and wet_tissue_outside_default(v,audit):
+   ruling=v.get('row_assessments',{}).get('B7',{})
+   if not ruling.get('outside_contrary_evidence_ids'):
+    r[6]=('已确认送出湿纸巾，按当前规则默认送至门外；'+('已确认送别词，B7记2分。' if r[4]==2 else '送别词未确认，B7记0分。'))
   if r[1] in NEGATIVE_SCORES and r[4]==NEGATIVE_SCORES[r[1]]:
    ruling=v.get('row_assessments',{}).get(r[1],{}).get('negative_ruling',{})
    r[6]='原表负分档：'+str(ruling.get('behavior','具体失当行为待核实'))+'；依据'+str(ruling.get('clause','待核实'))+'，'+r[1]+'记'+str(r[4])+'分。'
  if POLICY_NOTE not in v.setdefault('defaults',[]):v['defaults'].append(POLICY_NOTE)
  v['deductions']=deduction_details(v)
  return v
+
+def wet_tissue_outside_default(job,audit):
+ """A confirmed B8 provision supplies B7's outside-location presumption only."""
+ rows={r[1]:r for r in job.get('rows',[]) if len(r)>=7}
+ return (job.get('sendoff_policy_version')==SENDOFF_VERSION
+         and rows.get('B8',[None]*5)[4]==3
+         and any(c.get('category')=='bonus_wet_tissue' and confirmed_source(c)
+                 for c in audit.get('candidates',[])))
 
 def default_deduction(job,row):
  if not active(job) or row[4]=='NA':return 0
@@ -134,6 +147,11 @@ def validate(job,audit,errors):
  if version!=VERSION or audit.get('service_policy_version')!=VERSION:
   errors.append('Unsupported or mismatched service_policy_version');return
  rl=job.get('rows',[]);rows={r[1]:r for r in rl if len(r)>=7}
+ sendoff_version=job.get('sendoff_policy_version')
+ if sendoff_version!=audit.get('sendoff_policy_version'):
+  errors.append('job/audit sendoff_policy_version must match')
+ if sendoff_version not in {None,SENDOFF_VERSION}:
+  errors.append('Unsupported sendoff_policy_version')
  if len(rows)!=len(rl):errors.append('Every scoring row must be well-formed and have a unique item ID')
  for key,row in rows.items():
   if key not in ROW_MAX or row[0]!=key[0] or type(row[3]) is not int or row[3]!=ROW_MAX.get(key):errors.append('Canonical item/module/maximum mismatch: '+key)
@@ -144,6 +162,15 @@ def validate(job,audit,errors):
  assessments=job.get('row_assessments',{})
  if not isinstance(assessments,dict) or audit.get('row_assessments')!=assessments:
   errors.append('job/audit row_assessments must match');return
+ if sendoff_version==SENDOFF_VERSION and 'B7' in rows:
+  b7=rows['B7'];a=assessments.get('B7',{})
+  farewell=sources_valid(a.get('farewell_words_evidence_ids',[]),audit)
+  contrary_ids=a.get('outside_contrary_evidence_ids',[])
+  contrary=bool(contrary_ids) and sources_valid(contrary_ids,audit) and bool(a.get('outside_contrary_rationale'))
+  if contrary_ids and not contrary:errors.append('B7 contrary outside evidence requires confirmed original-audio source and rationale')
+  outside=sources_valid(a.get('outside_evidence_ids',[]),audit) or (wet_tissue_outside_default(job,audit) and not contrary)
+  if b7[4]==2 and (not farewell or not outside or contrary):errors.append('B7=2 requires confirmed farewell words and outside basis; confirmed contrary evidence overrides wet-tissue default')
+  if b7[4]==0 and farewell and outside and not contrary:errors.append('B7=0 conflicts with confirmed farewell words and wet-tissue/outside basis')
  for key,row in rows.items():
   if key in BONUS_ROWS:continue
   a=assessments.get(key,{})
