@@ -26,7 +26,7 @@ REQUIRED_COVERAGE = {
     "test_drive_actual", "test_drive_sweep", "purchase_timing", "bonus_wet_tissue", "bonus_starbucks",
     "h_veto", "na_basis", "negative_incentive",
 }
-TIMESTAMP_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
+TIMESTAMP_RE = re.compile(r"(?<!\d)\d{1,3}:\d{2}(?!\d)")
 
 
 def possible_sums(parts: list[set[int]]) -> set[int]:
@@ -118,7 +118,7 @@ def final_score(base: int, na: int, bonus: int) -> int:
     denominator = 100 - na
     if denominator <= 0:
         raise ValueError("NA must leave a positive denominator")
-    return math.floor(min(100, base / denominator * 100 + bonus))
+    return math.floor(min(100, base / denominator * 100 + bonus) + 1e-9)
 
 
 def negative_incentive(score: int) -> str:
@@ -395,8 +395,8 @@ def validate(job: dict, audit: dict) -> dict:
         errors.append("D1=NA requires confirmed NA-basis evidence")
     if d1_na_cascade and (seen.get("D") != (0, 0) or na < 25):
         errors.append("D1=NA requires full D module NA25 with applicable max/score 0/0")
-    if d1_value == 5 and not actual_drive_confirmed and distinct_drive_invites < 2:
-        errors.append("D1=5 without actual test drive requires two confirmed effective invitations")
+    if d1_value == 5 and not actual_drive_confirmed and distinct_drive_invites < 1:
+        errors.append("D1=5 without actual test drive requires confirmed invitation evidence")
     if d1_value == 5 and actual_drive_confirmed and not drive_invites and not matched_trial_adopted:
         errors.append("D1=5 requires confirmed invitation evidence")
     safety_veto = validated_matched_safety_veto(job, audit)

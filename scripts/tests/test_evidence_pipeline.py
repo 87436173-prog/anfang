@@ -32,6 +32,12 @@ def row(t0: int, t1: int, text: str) -> dict:
 
 
 class EvidenceCandidateRegressionTests(unittest.TestCase):
+    def test_integer_score_is_not_lost_to_floating_point_flooring(self):
+        self.assertEqual(validator.final_score(58, 0, 0), 58)
+
+    def test_three_digit_minute_timestamp_is_valid_for_long_recordings(self):
+        self.assertTrue(validator.has_timestamp("126:55-128:45确认全款及次日上午提车"))
+
     def test_trial_fuzzy_phrases_create_high_recall_candidates(self):
         records = [
             row(31900, 32300, "要不要车架一下，您也可以亲自开一圈感受"),
@@ -461,7 +467,17 @@ class DeterministicScoreValidationTests(unittest.TestCase):
         job["rows"] = [["D", "D1", "试驾邀请", 5, 5, "03:20", "完成邀请"], ["D", "D2-D9", "试驾体验", 20, "NA", "04:10", "客户未接受"]]
         audit["candidates"] = [self.confirmed("test_drive_invite", "E001")]
         result = validator.validate(job, audit)
-        self.assertTrue(any("two confirmed effective invitations" in error for error in result["errors"]))
+        self.assertTrue(any("D2-D9=NA requires two distinct confirmed effective invitations" in error for error in result["errors"]))
+
+    def test_one_confirmed_invitation_allows_d1_when_d2_d9_is_zero(self):
+        job, audit = self.valid_job_and_audit()
+        job["na"] = 0
+        job["modules"][3] = ["D试驾", 25, 5]
+        job["base"] = sum(row[2] for row in job["modules"])
+        job["rows"] = [["D", "D1", "试驾邀请", 5, 5, "03:20", "一次有效邀请"], ["D", "D2-D9", "试驾体验", 20, 0, "04:10", "未实际试驾且未形成第二次邀请"]]
+        audit["candidates"] = [self.confirmed("test_drive_invite", "E001")]
+        result = validator.validate(job, audit)
+        self.assertFalse(any("D1=5 without actual test drive" in error for error in result["errors"]))
 
     def test_duplicate_invitation_window_does_not_count_twice(self):
         job, audit = self.valid_job_and_audit()

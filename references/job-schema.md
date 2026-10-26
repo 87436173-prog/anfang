@@ -4,6 +4,8 @@
 
 2026-10-15起新录音同时在job与audit标记`sendoff_policy_version=wet-tissue-outside-2026-10-15-v1`。B7满分需在`row_assessments.B7.farewell_words_evidence_ids`引用已确认的送别词原音候选；“门外”依据可引用`outside_evidence_ids`，也可由已确认实际送出且B8=3的湿纸巾自动推定。若原音明确与门外相反，则填写`outside_contrary_evidence_ids`和`outside_contrary_rationale`，该证据覆盖推定。仅湿纸巾提及/承诺不够。历史job不自动补写标记。
 
+采用限时交强险政策时，基础`price_policy_version`继续保留实际采用的备案表版本。job与evidence-audit.json另记`reception_date`（YYYY-MM-DD，本次接待日期）及`price_policy_amendments`（适用时含`"HB-2026-10-24-DMI-INSURANCE"`，不适用时为空数组）；日期无法确认则标明待核实，不用报告日期替代。审计的价格判定记录适用车系、原音时间戳及该增量依据，PNG默认说明同步适用政策。此增量不自动重写历史job，也不表示原校验器已新增日期/车型自动裁决能力。细则见[限时交强险通知](price-policy-2026-10-24-dmi-insurance.md)。
+
 `render_report.py`读取UTF-8 JSON。核心字段：
 
 ```json
