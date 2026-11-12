@@ -1,0 +1,7 @@
+
+interface:
+  display_name: "跨境电商销售战报"
+  short_description: "整合店铺、SKU、共享库存与近15日销量，生成每日销售战报"
+  default_prompt: "Use $cross-border-sales-battle-report to generate a daily cross-border sales battle report from my exported sales and inventory workbooks."
+
+
