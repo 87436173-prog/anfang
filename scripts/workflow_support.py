@@ -4,7 +4,7 @@ import hashlib,json,os,subprocess,sys
 from datetime import datetime,timezone,timedelta
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
-RUNTIME=Path(r'C:/Users/no02/Documents/Codex/byd-scoring-runtime')
+RUNTIME=Path(os.environ.get('BYD_SCORING_RUNTIME') or (Path.home()/'Documents'/'Codex'/'byd-scoring-runtime'))
 RULE='6.0-G-HB-2026-09-14-r3'; PRICE='HB-2026-10-13-DH-EV'
 CST=timezone(timedelta(hours=8))
 def now(): return datetime.now(CST).isoformat()
