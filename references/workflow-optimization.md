@@ -8,7 +8,7 @@
 
 固定入口scripts/scoring_pipeline.py；固定runtime为C:/Users/no02/Documents/Codex/byd-scoring-runtime；Python为C:/Users/no02/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe。首次preflight和规则完整阅读后按资产/内容签名复用；变动重新核验。每次接待独立目录、原音哈希、转写、审计、job及报告，不跨客户复用。
 
-正式全量主转写继续small、Silero VAD、分段退化检测与断点续跑，一条音源成功全转写一次。取消每日自动Turbo全量shadow；只有用户明确指定质量对照样本时才用--shadow，且仍遵循试验身份和限额。GPT-6 sol/high是定时任务的主推理模型，不替换Whisper音频模型。
+正式全量主转写自2026-11-14起改为 Dolphin-CN-Dialect `small.cn`（`asr-dolphin-cn-dialect-2026-11-14-v1`）、fsmn-VAD 去静音与断点续跑，一条音源成功全转写一次；whisper-small 退出主转写链路，仅在 Dolphin 重跑仍失败时兜底并标注 fallback。取消每日自动Turbo全量shadow；只有用户明确指定质量对照样本时才用--shadow，且仍遵循试验身份和限额。GPT-6 sol/high是定时任务的主推理模型，不替换音频转写模型。
 
 先完整审读主转写并扫描后段、B3、两轮邀约、成交日期、茶点、加分、NA、H及范围内报价。不能把quality=ok当语义完整，不能把候选器没提取当行为没发生。用全量上下文筛选可能改变得分、意向、重要合规结论及必须管理提示的事件，再定向原音复核；等待背景、其他接待、无关技术讨论及全部补贴/置换不扩大窗口。不得省略实际给分/H/NA及范围内金额的独立原音证据。
 

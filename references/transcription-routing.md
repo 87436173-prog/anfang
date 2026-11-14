@@ -4,7 +4,7 @@
 
 本地暗访评分程序与未来小程序线上评分是两条独立链路，不通过口音判断互相切换：
 
-- **本地现行链路**：继续使用当前本地 Whisper 全量转写和高影响窗口复核。默认行为、任务目录、历史缓存和评分规则保持不变。
+- **本地现行链路**：全量主转写固定使用 Dolphin-CN-Dialect `small.cn`（版本 `asr-dolphin-cn-dialect-2026-11-14-v1`，脚本 `scripts/asr_dolphin.py`），高影响窗口仍用 Turbo/Large 复核。whisper-small 不再担任本地主转写，仅保留历史复现、第三意见与分声道归属补测三种用途。细则见 [asr-model-policy.md](asr-model-policy.md)。
 - **云端线上链路**：所有新线上录音，不论普通话、武汉话或混合口音，主转写统一使用腾讯云录音文件识别 `16k_zh_en_2.0`。不得先运行本地方言分类器，也不得把推测的方言类别写成评分事实。
 
 全局Skill只规定选择、审计与发布门禁，不负责创建云数据库、队列、COS、Worker或腾讯云资源。业务部署必须按已批准的云架构在独立环境完成。
@@ -13,7 +13,7 @@
 
 本地与云端必须使用不同部署环境、数据库、对象存储、队列和Worker ID，不争抢同一任务。对应配置语义为：
 
-- 本地：`APP_ENV=local`、`TRANSCRIBER_BACKEND=pywhispercpp`、`result_mode=local_codex_test`。
+- 本地：`APP_ENV=local`、`TRANSCRIBER_BACKEND=dolphin_local`、`ASR_MODEL=dolphin-cn-dialect-small.cn`、`result_mode=local_codex_test`。
 - 云影子：`APP_ENV=cloud`、`TRANSCRIBER_BACKEND=tencent_rec_file`、`result_mode=cloud_shadow`。
 - 云正式：`APP_ENV=cloud`、`TRANSCRIBER_BACKEND=tencent_rec_file`、`result_mode=cloud_codex`。
 
@@ -86,4 +86,23 @@
 自动化测试只使用fake client或合成审计，不访问腾讯云、不上传真实录音。只有另行授权真实样本后才能做金标准盲测；报告关键实体错误率、证据冲突率和人工复核率，不得外推或宣称总体准确率。
 
 ## 本地D语义判断补充
-后续本地任务按trial-semantic-policy.md采用已授权的D语义裁决；全量small、VAD、退化检测、高影响Turbo/Large及B3原始分声道复核继续。云端的识别路由、复核和发布门禁不受本次本地语义授权影响。
+后续本地任务按trial-semantic-policy.md采用已授权的D语义裁决；全量转写走Dolphin small.cn（asr-dolphin-cn-dialect-2026-11-14-v1）、fsmn-VAD、高影响Turbo/Large及B3原始分声道复核继续。云端的识别路由、复核和发布门禁不受本次本地语义授权影响。
+
+## 本地主转写身份记录
+
+本地job与审计自2026-11-14起应记录：
+
+```json
+{
+  "local_transcription": {
+    "provider": "dolphin_local",
+    "model": "dolphin-cn-dialect-small.cn",
+    "policy_version": "asr-dolphin-cn-dialect-2026-11-14-v1",
+    "vad": "fsmn_vad_zh-cn-16k-common",
+    "status": "success",
+    "fallback": "none"
+  }
+}
+```
+
+`fallback` 只允许 `none` 或 `whisper_small`；写 `whisper_small` 时必须在交付说明中同时说明原因（Dolphin 重跑一次仍失败）。历史本地job没有该字段时不补写、不重算。
