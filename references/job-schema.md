@@ -154,7 +154,7 @@ r2及r3新任务中，E2得3分还必须填写`quote_confirmation`：销售已�
 
 - `models_of_interest.primary`填写客户主关注车型；`own_brand`列出全部明确关注的本品车型（包含主关注车型），`competitors`列出竞品。未提及的列表写`["未提及"]`，无法辨认写`["待核实"]`；`evidence`必须包含时间戳依据。
 - 用户最新补充口径：本品其他车型和竞品车型仅列客户本人明确询问、比较或表达兴趣的车型。销售随口带过、单方面推荐、讲解时举例或用于对比但客户未表现关注的车型，一律不列入关注车型清单。
-- `intention.level`只允许`H/A/B/C/D/待核实`，`reason`与`evidence`必须填写。
+- `intention.level`只允许`O/H/A/B/C/D/待核实`，`reason`与`evidence`必须填写。口径按 `intention-level-2026-11-18-v1`：O=已订车，H=3天内订车，A=7天内，B=30天内，C=超30天或未给时间，D=看车不到10分钟离店。
 - `strict_control.status`只允许`是/否/待核实`。只要`own_brand`中包含任一严管车系就判“是”并触发专项审查；判“是”时必须写车系。配置、备案价无法确认时分别写“待核实”，不得猜测。
 - `compliance`必须存在；无问题时传空数组，报告会显示“未发现明确违规/风险话术”。有问题时，每项必须包含`type`（违规/风险/待核实）、`timestamp`、`quote`、`ruling`和`suggestion`。
 

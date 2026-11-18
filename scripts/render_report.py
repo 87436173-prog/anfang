@@ -139,8 +139,8 @@ def validate_review_fields(job):
     if not isinstance(intention, dict):
         raise ValueError("intention必须是对象")
     level = require_text(intention, "level", "intention.level").upper()
-    if level not in {"H", "A", "B", "C", "D", "待核实"}:
-        raise ValueError("intention.level只允许H/A/B/C/D/待核实")
+    if level not in {"O", "H", "A", "B", "C", "D", "待核实"}:
+        raise ValueError("intention.level只允许O/H/A/B/C/D/待核实")
     require_text(intention, "reason", "intention.reason")
     require_text(intention, "evidence", "intention.evidence")
 
