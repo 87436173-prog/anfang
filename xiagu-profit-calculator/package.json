@@ -1,0 +1,12 @@
+{
+  "name": "xiagu-profit-calculator",
+  "version": "2026.11.25",
+  "private": true,
+  "description": "Single-file TikTok Shop profit and pricing calculator",
+  "scripts": {
+    "test": "node tests/test-fees.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

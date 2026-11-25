@@ -1,0 +1,7 @@
+node_modules/
+.cloudbase/
+.env
+.env.*
+!.env.example
+verify-remote.html
+npm-debug.log*
